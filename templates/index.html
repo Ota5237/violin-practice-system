@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>音階支援システム</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <header>
+    <h1>🎻 音階支援システム</h1>
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="practice">練習</button>
+      <button class="tab-btn" data-tab="stats">記録・グラフ</button>
+    </nav>
+  </header>
+
+  <main>
+
+    <!-- ===== 練習タブ ===== -->
+    <div id="tab-practice">
+
+      <!-- 練習設定 -->
+      <section class="card" id="setupCard">
+        <h2>練習設定</h2>
+
+        <div class="select-group">
+          <label for="scaleSelect">調を選ぶ</label>
+          <select id="scaleSelect">
+            <option value="">-- 選択してください --</option>
+            <option value="ハ長調">ハ長調（C major）</option>
+            <option value="ト長調">ト長調（G major）</option>
+            <option value="ニ長調">ニ長調（D major）</option>
+            <option value="イ長調">イ長調（A major）</option>
+            <option value="ヘ長調">ヘ長調（F major）</option>
+          </select>
+        </div>
+
+        <div class="select-group">
+          <label>練習タイプ</label>
+          <div class="radio-group">
+            <label><input type="radio" name="direction" value="up" checked> ▲ 上行</label>
+            <label><input type="radio" name="direction" value="down"> ▼ 下行</label>
+            <label><input type="radio" name="direction" value="updown"> ▲▼ 上下</label>
+            <label><input type="radio" name="direction" value="arpeggio"> 🎵 アルペジオ</label>
+          </div>
+        </div>
+
+        <div class="select-group">
+          <label>練習モード</label>
+          <div class="radio-group">
+            <label><input type="radio" name="mode" value="step" checked> 🎯 1音ずつ</label>
+            <label><input type="radio" name="mode" value="tempo"> 🥁 テンポ</label>
+          </div>
+        </div>
+
+        <div class="select-group" id="bpmGroup" style="display:none">
+          <label for="bpmRange">テンポ：<span id="bpmValue">60</span> BPM</label>
+          <input type="range" id="bpmRange" min="40" max="120" value="60" step="4">
+        </div>
+
+        <button id="startBtn" class="btn-primary" disabled>▶ 練習開始</button>
+      </section>
+
+      <!-- 練習画面 -->
+      <section class="card" id="practiceCard" style="display:none">
+        <div class="mode-badge" id="modeBadge"></div>
+        <div class="scale-progress" id="scaleProgress"></div>
+        <div class="result-note" id="resultNote">--</div>
+        <div class="result-label" id="resultLabel">準備してください</div>
+        <div class="result-freq" id="resultFreq">周波数: -- Hz</div>
+        <div class="result-status" id="resultStatus"></div>
+        <div class="fingering-info" id="fingeringInfo"></div>
+        <div class="countdown" id="countdown" style="display:none"></div>
+        <button id="stopBtn" class="btn-secondary">■ 練習を終了</button>
+      </section>
+
+      <!-- 完了画面 -->
+      <section class="card" id="completeCard" style="display:none">
+        <div class="complete-icon">🎉</div>
+        <h2>完了！</h2>
+        <p id="completeMsg"></p>
+        <div class="accuracy-display" id="accuracyDisplay" style="display:none">
+          <div class="accuracy-num" id="accuracyNum"></div>
+          <div class="accuracy-label">正答率</div>
+        </div>
+        <button id="retryBtn" class="btn-primary">もう一度</button>
+      </section>
+
+      <!-- 練習履歴 -->
+      <section class="card">
+        <h2>練習履歴</h2>
+        <ul class="history-list" id="historyList">
+          <li class="history-empty">まだ履歴がありません</li>
+        </ul>
+      </section>
+
+    </div>
+
+    <!-- ===== 記録・グラフタブ ===== -->
+    <div id="tab-stats" style="display:none">
+
+      <section class="card">
+        <h2>📈 正答率の推移</h2>
+        <canvas id="chartAccuracy"></canvas>
+      </section>
+
+      <section class="card">
+        <h2>📅 練習回数（日別）</h2>
+        <canvas id="chartDaily"></canvas>
+      </section>
+
+      <section class="card">
+        <h2>🎼 調ごとの正答率</h2>
+        <canvas id="chartScale"></canvas>
+      </section>
+
+      <button id="clearStatsBtn" class="btn-danger btn-sm">履歴を消去</button>
+
+    </div>
+
+  </main>
+
+  <script src="{{ url_for('static', filename='js/pitch.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/storage.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+</body>
+</html>
