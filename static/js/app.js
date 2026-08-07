@@ -1,11 +1,13 @@
 const detector = new PitchDetector();
-let scalesData    = {};
-let practiceNotes = [];
-let currentIndex  = 0;
-let isPracticing  = false;
+let scalesData      = {};
+let practiceNotes   = [];
+let currentIndex    = 0;
+let isPracticing    = false;
+let currentProfileId = null;
 
 // テンポモード用
 let tempoInterval  = null;
+let countTimer     = null;
 let notesCorrect   = 0;
 let detectedFreqNow = null;
 
@@ -102,13 +104,14 @@ function startTempoMode() {
   });
 
   // カウントダウン
-  const countTimer = setInterval(() => {
+  countTimer = setInterval(() => {
     if (countdown > 0) {
       countdownEl.textContent = countdown;
       playClick(true); // 強拍
       countdown--;
     } else {
       clearInterval(countTimer);
+      countTimer = null;
       countdownEl.style.display = 'none';
       isPracticing = true;
       showCurrentNote();
@@ -229,7 +232,8 @@ async function completePractice() {
 
   const entry = await saveHistory({
     scale: scaleKey, direction: dirLabel, mode,
-    bpm, notes_correct: notesCorrect, notes_total: practiceNotes.length
+    bpm, notes_correct: notesCorrect, notes_total: practiceNotes.length,
+    profile_id: currentProfileId
   });
   addHistoryItem(entry);
 
@@ -251,6 +255,7 @@ function stopPractice() {
   detector.stop();
   isPracticing = false;
   if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
+  if (countTimer)    { clearInterval(countTimer);    countTimer = null; }
   document.getElementById('setupCard').style.display    = 'block';
   document.getElementById('practiceCard').style.display = 'none';
   document.getElementById('completeCard').style.display = 'none';
@@ -268,9 +273,12 @@ function addHistoryItem(entry) {
 }
 
 async function renderHistory() {
-  const history = await getHistory();
+  const history = await getHistory(currentProfileId);
   const list = document.getElementById('historyList');
-  if (history.length === 0) return;
+  if (history.length === 0) {
+    list.innerHTML = '<li class="history-empty">まだ履歴がありません</li>';
+    return;
+  }
   list.innerHTML = history.map(e => {
     const acc = e.mode === 'tempo' ? `　正答率: ${e.accuracy}%` : '';
     return `<li>${e.practiced_at}　${e.scale}（${e.direction}）${acc}</li>`;
@@ -283,7 +291,7 @@ async function renderHistory() {
 const charts = { accuracy: null, daily: null, scale: null };
 
 async function renderStats() {
-  const data   = await getStats();
+  const data   = await getStats(currentProfileId);
   const daily  = [...data.daily].reverse();
   const scales = data.by_scale;
 
@@ -300,8 +308,8 @@ async function renderStats() {
       datasets: [{
         label: '平均正答率 (%)',
         data: daily.map(d => d.avg_accuracy),
-        borderColor: '#e8c97a',
-        backgroundColor: 'rgba(232,201,122,0.15)',
+        borderColor: '#e8c468',
+        backgroundColor: 'rgba(232,196,104,0.15)',
         tension: 0.3, fill: true
       }]
     },
@@ -317,11 +325,11 @@ async function renderStats() {
       datasets: [{
         label: '練習回数',
         data: daily.map(d => d.count),
-        backgroundColor: 'rgba(46,204,113,0.7)',
+        backgroundColor: 'rgba(127,166,104,0.75)',
         borderRadius: 6
       }]
     },
-    options: chartOptions('回数')
+    options: chartOptions('回数', undefined, undefined, true)
   });
 
   // 調ごとの正答率
@@ -333,7 +341,7 @@ async function renderStats() {
       datasets: [{
         label: '平均正答率 (%)',
         data: scales.map(s => s.avg_accuracy),
-        backgroundColor: 'rgba(52,152,219,0.7)',
+        backgroundColor: 'rgba(179,80,90,0.75)',
         borderRadius: 6
       }]
     },
@@ -341,15 +349,16 @@ async function renderStats() {
   });
 }
 
-function chartOptions(yLabel, min, max) {
+function chartOptions(yLabel, min, max, integer = false) {
   return {
     responsive: true,
-    plugins: { legend: { labels: { color: '#eee' } } },
+    plugins: { legend: { labels: { color: '#f5e8d8' } } },
     scales: {
-      x: { ticks: { color: '#aaa' }, grid: { color: '#2a2a4a' } },
+      x: { ticks: { color: '#c2a78c' }, grid: { color: 'rgba(212,162,78,0.12)' } },
       y: {
-        ticks: { color: '#aaa' }, grid: { color: '#2a2a4a' },
-        title: { display: true, text: yLabel, color: '#aaa' },
+        ticks: { color: '#c2a78c', precision: integer ? 0 : undefined },
+        grid: { color: 'rgba(212,162,78,0.12)' },
+        title: { display: true, text: yLabel, color: '#c2a78c' },
         min, max
       }
     }
@@ -405,7 +414,7 @@ document.getElementById('retryBtn').addEventListener('click', () => {
 
 async function clearAllHistory() {
   if (!confirm('履歴を全件削除しますか？')) return;
-  await clearHistory();
+  await clearHistory(currentProfileId);
   document.getElementById('historyList').innerHTML =
     '<li class="history-empty">まだ履歴がありません</li>';
   if (statsLoaded) renderStats();
@@ -414,7 +423,71 @@ async function clearAllHistory() {
 document.getElementById('clearStatsBtn').addEventListener('click', clearAllHistory);
 
 // ===========================
+// プロフィール管理
+// ===========================
+const PROFILE_STORAGE_KEY = 'violinapp_profile_id';
+
+function renderProfileSelect(profiles) {
+  const select = document.getElementById('profileSelect');
+  select.innerHTML = profiles.map(p =>
+    `<option value="${p.id}" ${p.id === currentProfileId ? 'selected' : ''}>${p.name}</option>`
+  ).join('');
+}
+
+async function initProfiles() {
+  const profiles = await getProfiles();
+  const saved = parseInt(localStorage.getItem(PROFILE_STORAGE_KEY), 10);
+  const match = profiles.find(p => p.id === saved);
+  currentProfileId = match ? match.id : profiles[0].id;
+  renderProfileSelect(profiles);
+  await renderHistory();
+}
+
+document.getElementById('profileSelect').addEventListener('change', async (e) => {
+  currentProfileId = parseInt(e.target.value, 10);
+  localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
+  await renderHistory();
+  if (statsLoaded) await renderStats();
+});
+
+document.getElementById('addProfileBtn').addEventListener('click', async () => {
+  const name = prompt('新しいプロフィール名を入力してください');
+  if (!name || !name.trim()) return;
+  try {
+    const profile = await createProfile(name.trim());
+    currentProfileId = profile.id;
+    localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
+    renderProfileSelect(await getProfiles());
+    await renderHistory();
+    if (statsLoaded) await renderStats();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+document.getElementById('deleteProfileBtn').addEventListener('click', async () => {
+  const profiles = await getProfiles();
+  if (profiles.length <= 1) {
+    alert('最後のプロフィールは削除できません');
+    return;
+  }
+  const current = profiles.find(p => p.id === currentProfileId);
+  if (!confirm(`プロフィール「${current?.name}」と、その練習履歴を削除しますか？`)) return;
+  try {
+    await deleteProfile(currentProfileId);
+    const remaining = await getProfiles();
+    currentProfileId = remaining[0].id;
+    localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
+    renderProfileSelect(remaining);
+    await renderHistory();
+    if (statsLoaded) await renderStats();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+// ===========================
 // 初期化
 // ===========================
 loadScales();
-renderHistory();
+initProfiles();

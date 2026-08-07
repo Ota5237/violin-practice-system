@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>音階支援システム</title>
+  <title>音階練習</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 
   <header>
-    <h1>🎻 音階支援システム</h1>
+    <h1>音階練習</h1>
+    <div class="profile-bar">
+      <select id="profileSelect"></select>
+      <button id="addProfileBtn" class="btn-icon" title="プロフィールを追加">＋</button>
+      <button id="deleteProfileBtn" class="btn-icon" title="プロフィールを削除">🗑</button>
+    </div>
     <nav class="tab-nav">
       <button class="tab-btn active" data-tab="practice">練習</button>
       <button class="tab-btn" data-tab="stats">記録・グラフ</button>
@@ -51,8 +56,8 @@
         <div class="select-group">
           <label>練習モード</label>
           <div class="radio-group">
-            <label><input type="radio" name="mode" value="step" checked> 🎯 1音ずつ</label>
-            <label><input type="radio" name="mode" value="tempo"> 🥁 テンポ</label>
+            <label><input type="radio" name="mode" value="step" checked>1音ずつ</label>
+            <label><input type="radio" name="mode" value="tempo">テンポ</label>
           </div>
         </div>
 
