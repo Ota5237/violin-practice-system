@@ -12,9 +12,66 @@ let notesCorrect   = 0;
 let detectedFreqNow = null;
 
 // ===== 音階データ読み込み =====
+// カテゴリーを追加する場合はここに1行足す（例: 第3ポジション）
+const CATEGORY_FILES = [
+  { key: 'first_position', file: '/static/data/scales/first_position.json' },
+  { key: 'two_octave',     file: '/static/data/scales/two_octave.json' },
+];
+
 async function loadScales() {
-  const res = await fetch('/static/data/scales.json');
-  scalesData = await res.json();
+  const [notesRes, ...categoryResults] = await Promise.all([
+    fetch('/static/data/notes.json'),
+    ...CATEGORY_FILES.map(c => fetch(c.file)),
+  ]);
+
+  const notes      = await notesRes.json();
+  const categories = {};
+  for (let i = 0; i < CATEGORY_FILES.length; i++) {
+    categories[CATEGORY_FILES[i].key] = await categoryResults[i].json();
+  }
+
+  scalesData = { notes, categories };
+  populateScaleSelect();
+}
+
+// ===== カテゴリー・調セレクト =====
+function getCurrentCategoryKey() {
+  return document.getElementById('categorySelect').value;
+}
+
+function getCurrentScales() {
+  return scalesData.categories?.[getCurrentCategoryKey()]?.scales || {};
+}
+
+function populateScaleSelect() {
+  const scales     = getCurrentScales();
+  const scaleSelect = document.getElementById('scaleSelect');
+  const keys        = Object.keys(scales);
+
+  scaleSelect.innerHTML = '<option value="">-- 選択してください --</option>' +
+    keys.map(key => `<option value="${key}">${scales[key].name}</option>`).join('');
+
+  document.getElementById('startBtn').disabled = true;
+}
+
+// 音階の音リストを 上行/下行/上下 に分割する。
+// notes 配列内の1音に "turn": true を付けると、そこが折り返し地点（頂点）として
+// 上行と下行の境目に使われ、上下モードでも頂点の音が1回しか出てこなくなる。
+// turn がない場合は notes を上行として扱い、下行はその逆順（頂点の重複は自動で除去）とする。
+function splitScaleNotes(scale) {
+  const notes   = scale.notes;
+  const turnIdx = notes.findIndex(n => n.turn);
+
+  if (turnIdx === -1) {
+    const down = [...notes].reverse();
+    return { up: notes, down, updown: [...notes, ...down.slice(1)] };
+  }
+
+  return {
+    up:     notes.slice(0, turnIdx + 1),
+    down:   notes.slice(turnIdx),
+    updown: notes
+  };
 }
 
 // ===== 練習開始 =====
@@ -22,12 +79,14 @@ function startPractice() {
   const scaleKey  = document.getElementById('scaleSelect').value;
   const direction = document.querySelector('input[name="direction"]:checked').value;
   const mode      = document.querySelector('input[name="mode"]:checked').value;
-  const scale     = scalesData.scales[scaleKey];
+  const scale     = getCurrentScales()[scaleKey];
 
   // 音リストを組み立て
-  if      (direction === 'up')      practiceNotes = [...scale.notes];
-  else if (direction === 'down')    practiceNotes = [...scale.notes].reverse();
-  else if (direction === 'updown')  practiceNotes = [...scale.notes, ...[...scale.notes].reverse()];
+  const { up, down, updown } = splitScaleNotes(scale);
+
+  if      (direction === 'up')      practiceNotes = up;
+  else if (direction === 'down')    practiceNotes = down;
+  else if (direction === 'updown')  practiceNotes = updown;
   else if (direction === 'arpeggio')practiceNotes = [...scale.arpeggio];
 
   currentIndex = 0;
@@ -63,7 +122,7 @@ function startStepMode() {
 }
 
 function onPitchDetectedStep(freq) {
-  const noteData = scalesData.notes[practiceNotes[currentIndex]];
+  const noteData = scalesData.notes[practiceNotes[currentIndex].note];
   document.getElementById('resultFreq').textContent = `周波数: ${freq.toFixed(1)} Hz`;
 
   const cents    = 1200 * Math.log2(freq / noteData.freq);
@@ -138,7 +197,7 @@ function startTempoMode() {
 
 function evaluateBeat() {
   if (currentIndex >= practiceNotes.length) return;
-  const noteData = scalesData.notes[practiceNotes[currentIndex]];
+  const noteData = scalesData.notes[practiceNotes[currentIndex].note];
   const statusEl = document.getElementById('resultStatus');
 
   if (detectedFreqNow && detectedFreqNow > 0) {
@@ -194,12 +253,13 @@ function nextNote() {
 
 function showCurrentNote() {
   if (currentIndex >= practiceNotes.length) return;
-  const noteData = scalesData.notes[practiceNotes[currentIndex]];
+  const entry    = practiceNotes[currentIndex];
+  const noteData = scalesData.notes[entry.note];
   document.getElementById('resultNote').textContent    = noteData.label;
-  document.getElementById('resultLabel').textContent   = practiceNotes[currentIndex];
+  document.getElementById('resultLabel').textContent   = entry.note;
   document.getElementById('resultStatus').textContent  = '';
   document.getElementById('resultStatus').className    = 'result-status';
-  document.getElementById('fingeringInfo').textContent = `${noteData.string} · ${noteData.position}`;
+  document.getElementById('fingeringInfo').textContent = `${entry.string} · ${entry.position}`;
   document.getElementById('resultFreq').textContent    = '周波数: -- Hz';
 
   document.querySelectorAll('.progress-dot').forEach((d, i) => {
@@ -208,8 +268,8 @@ function showCurrentNote() {
 }
 
 function renderProgress() {
-  document.getElementById('scaleProgress').innerHTML = practiceNotes.map((note) => {
-    const label = scalesData.notes[note]?.label || note;
+  document.getElementById('scaleProgress').innerHTML = practiceNotes.map((entry) => {
+    const label = scalesData.notes[entry.note]?.label || entry.note;
     return `<div class="progress-dot">${label}</div>`;
   }).join('');
 }
@@ -388,6 +448,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ===========================
 // イベント
 // ===========================
+document.getElementById('categorySelect').addEventListener('change', populateScaleSelect);
+
 document.getElementById('scaleSelect').addEventListener('change', (e) => {
   document.getElementById('startBtn').disabled = e.target.value === '';
 });
@@ -491,3 +553,6 @@ document.getElementById('deleteProfileBtn').addEventListener('click', async () =
 // ===========================
 loadScales();
 initProfiles();
+
+
+//442hz

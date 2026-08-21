@@ -32,14 +32,17 @@
         <h2>練習設定</h2>
 
         <div class="select-group">
+          <label for="categorySelect">カテゴリーを選ぶ</label>
+          <select id="categorySelect">
+            <option value="first_position">第一ポジションの音階</option>
+            <option value="two_octave">2オクターブの音階</option>
+          </select>
+        </div>
+
+        <div class="select-group">
           <label for="scaleSelect">調を選ぶ</label>
           <select id="scaleSelect">
             <option value="">-- 選択してください --</option>
-            <option value="ハ長調">ハ長調（C major）</option>
-            <option value="ト長調">ト長調（G major）</option>
-            <option value="ニ長調">ニ長調（D major）</option>
-            <option value="イ長調">イ長調（A major）</option>
-            <option value="ヘ長調">ヘ長調（F major）</option>
           </select>
         </div>
 
@@ -91,7 +94,7 @@
           <div class="accuracy-num" id="accuracyNum"></div>
           <div class="accuracy-label">正答率</div>
         </div>
-        <button id="retryBtn" class="btn-primary">もう一度</button>
+        <button id="retryBtn" class="btn-primary">戻る</button>
       </section>
 
       <!-- 練習履歴 -->

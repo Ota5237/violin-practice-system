@@ -1,0 +1,166 @@
+{
+  "label": "第一ポジションの音階",
+  "scales": {
+    "ハ長調": {
+      "name": "ハ長調（C-dur）",
+      "notes": [
+        { "note": "C4", "string": "G弦", "position": "3の指" },
+        { "note": "B3", "string": "G弦", "position": "2の指" },
+        { "note": "C4", "string": "G弦", "position": "3の指" },
+        { "note": "D4", "string": "D弦", "position": "開放弦" },
+        { "note": "E4", "string": "D弦", "position": "1の指" },
+        { "note": "F4", "string": "D弦", "position": "2の指" },
+        { "note": "G4", "string": "D弦", "position": "3の指" },
+        { "note": "A4", "string": "A弦", "position": "開放弦" },
+        { "note": "B4", "string": "A弦", "position": "1の指" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "D5", "string": "A弦", "position": "3の指" },
+        { "note": "E5", "string": "E弦", "position": "開放弦" },
+        { "note": "F5", "string": "E弦", "position": "1の指" },
+        { "note": "G5", "string": "E弦", "position": "2の指" },
+        { "note": "A5", "string": "E弦", "position": "3の指" },
+        { "note": "B5", "string": "E弦", "position": "4の指" },
+        { "note": "C6", "string": "E弦", "position": "4の指(高)", "turn": true },
+        { "note": "B5", "string": "E弦", "position": "4の指" },
+        { "note": "A5", "string": "E弦", "position": "3の指" },
+        { "note": "G5", "string": "E弦", "position": "2の指" },
+        { "note": "F5", "string": "E弦", "position": "1の指" },
+        { "note": "E5", "string": "A弦", "position": "4の指" },
+        { "note": "D5", "string": "A弦", "position": "3の指" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "B4", "string": "A弦", "position": "1の指" },
+        { "note": "A4", "string": "D弦", "position": "4の指" },
+        { "note": "G4", "string": "D弦", "position": "3の指" },
+        { "note": "F4", "string": "D弦", "position": "2の指" },
+        { "note": "E4", "string": "D弦", "position": "1の指" },
+        { "note": "D4", "string": "G弦", "position": "4の指" },
+        { "note": "C4", "string": "G弦", "position": "3の指" },
+        { "note": "B3", "string": "G弦", "position": "2の指" }
+      ],
+      "arpeggio": [
+        { "note": "C4", "string": "G弦", "position": "3の指" },
+        { "note": "E4", "string": "D弦", "position": "1の指" },
+        { "note": "G4", "string": "D弦", "position": "3の指" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "E5", "string": "E弦", "position": "1の指" },
+        { "note": "G5", "string": "E弦", "position": "2の指" },
+        { "note": "C6", "string": "E弦", "position": "4の指(高)" },
+        { "note": "G5", "string": "E弦", "position": "2の指" },
+        { "note": "E5", "string": "E弦", "position": "1の指" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "G4", "string": "D弦", "position": "3の指" },
+        { "note": "E4", "string": "D弦", "position": "1の指" },
+        { "note": "C4", "string": "G弦", "position": "3の指" }
+      ]
+    },
+    "イ短調": {
+      "name": "イ短調（a-moll）",
+      "notes": [
+        { "note": "A3",  "string": "G弦", "position": "2の指" },
+        { "note": "Gs3", "string": "G弦", "position": "1の指" },
+        { "note": "A3",  "string": "G弦", "position": "1の指" },
+        { "note": "B3",  "string": "G弦", "position": "2の指" },
+        { "note": "C4",  "string": "G弦", "position": "3の指" },
+        { "note": "D4",  "string": "D弦", "position": "開放弦" },
+        { "note": "E4",  "string": "D弦", "position": "1の指" },
+        { "note": "Fs4", "string": "D弦", "position": "2の指" },
+        { "note": "Gs4", "string": "D弦", "position": "3の指" },
+        { "note": "A4",  "string": "A弦", "position": "開放弦" },
+        { "note": "B4",  "string": "A弦", "position": "1の指" },
+        { "note": "C5",  "string": "A弦", "position": "2の指" },
+        { "note": "D5",  "string": "A弦", "position": "3の指" },
+        { "note": "E5",  "string": "E弦", "position": "開放弦" },
+        { "note": "Fs5", "string": "E弦", "position": "1の指" },
+        { "note": "Gs5", "string": "E弦", "position": "2の指" },
+        { "note": "A5",  "string": "E弦", "position": "3の指", "turn": true },
+        { "note": "G5",  "string": "E弦", "position": "2の指" },
+        { "note": "F5",  "string": "E弦", "position": "1の指" },
+        { "note": "E5",  "string": "A弦", "position": "4の指" },
+        { "note": "D5",  "string": "A弦", "position": "3の指" },
+        { "note": "C5",  "string": "A弦", "position": "2の指" },
+        { "note": "B4",  "string": "A弦", "position": "1の指" },
+        { "note": "A4",  "string": "D弦", "position": "4の指" },
+        { "note": "F4",  "string": "D弦", "position": "3の指" },
+        { "note": "E4",  "string": "D弦", "position": "2の指" },
+        { "note": "D4",  "string": "D弦", "position": "1の指" },
+        { "note": "C4",  "string": "G弦", "position": "4の指" },
+        { "note": "B3",  "string": "G弦", "position": "3の指" },
+        { "note": "A3",  "string": "G弦", "position": "2の指" },
+        { "note": "Gs3", "string": "G弦", "position": "1の指" },
+        { "note": "A3",  "string": "G弦", "position": "1の指(低)" }
+      ],
+      "arpeggio": [
+        { "note": "A3", "string": "G弦", "position": "1の指" },
+        { "note": "C4", "string": "G弦", "position": "3の指" },
+        { "note": "E4", "string": "D弦", "position": "1の指" },
+        { "note": "A4", "string": "A弦", "position": "開放弦" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "E5", "string": "E弦", "position": "開放弦" },
+        { "note": "A5", "string": "E弦", "position": "3の指" },
+        { "note": "E5", "string": "A弦", "position": "4の指" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "A4", "string": "D弦", "position": "4の指" },
+        { "note": "E4", "string": "D弦", "position": "1の指" },
+        { "note": "C4", "string": "G弦", "position": "3の指" },
+        { "note": "A3", "string": "G弦", "position": "1の指" }
+      ]
+    },
+    "ニ長調": {
+      "name": "ニ長調（D-dur）",
+      "notes": [
+        { "note": "D4",  "string": "D弦", "position": "開放弦" },
+        { "note": "E4",  "string": "D弦", "position": "1の指" },
+        { "note": "Fs4", "string": "D弦", "position": "2の指(高)" },
+        { "note": "G4",  "string": "D弦", "position": "3の指" },
+        { "note": "A4",  "string": "A弦", "position": "開放弦" },
+        { "note": "B4",  "string": "A弦", "position": "1の指" },
+        { "note": "C5",  "string": "A弦", "position": "2の指" },
+        { "note": "D5",  "string": "A弦", "position": "3の指" }
+      ],
+      "arpeggio": [
+        { "note": "D4",  "string": "D弦", "position": "開放弦" },
+        { "note": "Fs4", "string": "D弦", "position": "2の指(高)" },
+        { "note": "A4",  "string": "A弦", "position": "開放弦" },
+        { "note": "D5",  "string": "A弦", "position": "3の指" }
+      ]
+    },
+    "イ長調": {
+      "name": "イ長調（A-dur）",
+      "notes": [
+        { "note": "A4",  "string": "A弦", "position": "開放弦" },
+        { "note": "B4",  "string": "A弦", "position": "1の指" },
+        { "note": "Cs5", "string": "A弦", "position": "2の指(高)" },
+        { "note": "D5",  "string": "A弦", "position": "3の指" },
+        { "note": "E5",  "string": "E弦", "position": "開放弦" },
+        { "note": "Fs5", "string": "E弦", "position": "1の指" },
+        { "note": "G5",  "string": "E弦", "position": "2の指" },
+        { "note": "A5",  "string": "E弦", "position": "3の指" }
+      ],
+      "arpeggio": [
+        { "note": "A4",  "string": "A弦", "position": "開放弦" },
+        { "note": "Cs5", "string": "A弦", "position": "2の指(高)" },
+        { "note": "E5",  "string": "E弦", "position": "開放弦" },
+        { "note": "A5",  "string": "E弦", "position": "3の指" }
+      ]
+    },
+    "ヘ長調": {
+      "name": "ヘ長調（F-dur）",
+      "notes": [
+        { "note": "F4",  "string": "D弦", "position": "2の指" },
+        { "note": "G4",  "string": "D弦", "position": "3の指" },
+        { "note": "A4",  "string": "A弦", "position": "開放弦" },
+        { "note": "Bb4", "string": "A弦", "position": "1の指(低)" },
+        { "note": "C5",  "string": "A弦", "position": "2の指" },
+        { "note": "D5",  "string": "A弦", "position": "3の指" },
+        { "note": "E5",  "string": "E弦", "position": "開放弦" },
+        { "note": "F5",  "string": "E弦", "position": "1の指(低)" }
+      ],
+      "arpeggio": [
+        { "note": "F4", "string": "D弦", "position": "2の指" },
+        { "note": "A4", "string": "A弦", "position": "開放弦" },
+        { "note": "C5", "string": "A弦", "position": "2の指" },
+        { "note": "F5", "string": "E弦", "position": "1の指(低)" }
+      ]
+    }
+  }
+}
