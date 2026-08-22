@@ -225,10 +225,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   fill: var(--bg-deep);
 }
 
-.finger-marker-group {
-  transition: transform 0.35s cubic-bezier(.4,0,.2,1);
-}
-
 .finger-marker {
   fill: var(--gold-bright);
   stroke: var(--bg-deep);
