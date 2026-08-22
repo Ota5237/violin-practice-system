@@ -32,6 +32,7 @@ async function loadScales() {
 
   scalesData = { notes, categories };
   populateScaleSelect();
+  renderFingerboardLandmarks();
 }
 
 // ===== カテゴリー・調セレクト =====
@@ -99,7 +100,7 @@ function startPractice() {
   const badge = document.getElementById('modeBadge');
   badge.textContent = mode === 'step' ? '🎯 1音ずつモード' : `🥁 テンポモード ${document.getElementById('bpmRange').value} BPM`;
 
-  renderProgress();
+  renderNoteTrack();
 
   if (mode === 'step') {
     startStepMode();
@@ -215,8 +216,6 @@ function evaluateBeat() {
     statusEl.className   = 'result-status wrong';
   }
 
-  // ドットを更新
-  document.querySelectorAll('.progress-dot')[currentIndex]?.classList.replace('current', 'done');
   currentIndex++;
   detectedFreqNow = null;
 }
@@ -241,7 +240,6 @@ function playClick(accent = false) {
 // 共通
 // ===========================
 function nextNote() {
-  document.querySelectorAll('.progress-dot')[currentIndex]?.classList.replace('current', 'done');
   currentIndex++;
   if (currentIndex >= practiceNotes.length) {
     completePractice();
@@ -253,25 +251,148 @@ function nextNote() {
 
 function showCurrentNote() {
   if (currentIndex >= practiceNotes.length) return;
-  const entry    = practiceNotes[currentIndex];
-  const noteData = scalesData.notes[entry.note];
-  document.getElementById('resultNote').textContent    = noteData.label;
-  document.getElementById('resultLabel').textContent   = entry.note;
+  const entry = practiceNotes[currentIndex];
   document.getElementById('resultStatus').textContent  = '';
   document.getElementById('resultStatus').className    = 'result-status';
   document.getElementById('fingeringInfo').textContent = `${entry.string} · ${entry.position}`;
   document.getElementById('resultFreq').textContent    = '周波数: -- Hz';
 
-  document.querySelectorAll('.progress-dot').forEach((d, i) => {
-    d.classList.toggle('current', i === currentIndex);
+  updateNoteTrackView();
+  updateFingerboard(entry);
+}
+
+// ===========================
+// 指板ビュー
+// ===========================
+// 指の縦位置は「開放弦から何半音離れているか」で決める。
+// ミ→ファ、シ→ドのような半音の隣り合いは間隔が狭く、全音の隣り合いは
+// 間隔が広くなる（実際のバイオリンの指の間隔と同じ）。
+const FB_STRING_X    = { 'G弦': 45, 'D弦': 95, 'A弦': 145, 'E弦': 195 };
+const FB_STRING_OPEN = { 'G弦': 'G3', 'D弦': 'D4', 'A弦': 'A4', 'E弦': 'E5' };
+const FB_NUT_Y            = 30;  // 開放弦（0半音）の位置
+const FB_PX_PER_SEMITONE  = 18;  // 半音1つあたりの縦幅
+const FB_MAX_Y             = 225; // 指板の下端
+
+function fingerboardY(entry) {
+  const openFreq = scalesData.notes[FB_STRING_OPEN[entry.string]].freq;
+  const noteFreq = scalesData.notes[entry.note].freq;
+  const semitones = 12 * Math.log2(noteFreq / openFreq);
+  return Math.min(FB_NUT_Y + semitones * FB_PX_PER_SEMITONE, FB_MAX_Y);
+}
+
+function renderFingerboardTicks() {
+  const g = document.getElementById('fbTicks');
+  if (!g || g.childNodes.length > 0) return;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const maxSemitone = Math.floor((FB_MAX_Y - FB_NUT_Y) / FB_PX_PER_SEMITONE);
+  for (let s = 1; s <= maxSemitone; s++) {
+    const line = document.createElementNS(svgNS, 'line');
+    const y = FB_NUT_Y + s * FB_PX_PER_SEMITONE;
+    line.setAttribute('x1', 30); line.setAttribute('x2', 210);
+    line.setAttribute('y1', y);  line.setAttribute('y2', y);
+    line.setAttribute('class', 'fb-position-guide');
+    g.appendChild(line);
+  }
+}
+
+// G3〜D6 の間にある♯♭なしの音（幹音）を、各弦ごとに実際に届く高さへ配置する。
+// 同じ音名でも弦によって開放弦からの半音数が違うので、縦位置は弦ごとに変わる
+// （実際の指板で各音の位置が弦ごとに違うのと同じ）。
+const FB_NATURAL_NOTES = ['G3','A3','H3','C4','D4','E4','F4','G4','A4','H4','C5','D5','E5','F5','G5','A5','H5','C6','D6'];
+const FB_LETTER        = { G: 'G', A: 'A', H: 'H', C: 'C', D: 'D', E: 'E', F: 'F' };
+const FB_NATURAL_RE    = /^[A-H]\d$/; // 例: "C4" は幹音、"Cs4"/"Df4" はシャープ/フラット
+
+function renderFingerboardLandmarks() {
+  const g = document.getElementById('fbLandmarks');
+  if (!g || g.childNodes.length > 0) return;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const maxSemitone = Math.floor((FB_MAX_Y - FB_NUT_Y) / FB_PX_PER_SEMITONE);
+
+  Object.keys(FB_STRING_OPEN).forEach(str => {
+    const openFreq = scalesData.notes[FB_STRING_OPEN[str]].freq;
+    const x = FB_STRING_X[str];
+
+    FB_NATURAL_NOTES.forEach(noteKey => {
+      const semitones = 12 * Math.log2(scalesData.notes[noteKey].freq / openFreq);
+      if (semitones < -0.01 || semitones > maxSemitone + 0.01) return; // 開放弦より低い/指板の外は除く
+      const y = FB_NUT_Y + semitones * FB_PX_PER_SEMITONE;
+
+      const chip = document.createElementNS(svgNS, 'g');
+      chip.setAttribute('class', 'fb-landmark');
+      chip.dataset.string = str;
+      chip.dataset.note   = noteKey;
+
+      const circle = document.createElementNS(svgNS, 'circle');
+      circle.setAttribute('cx', x); circle.setAttribute('cy', y); circle.setAttribute('r', 8);
+      circle.setAttribute('class', 'fb-landmark-circle');
+      chip.appendChild(circle);
+
+      const label = document.createElementNS(svgNS, 'text');
+      label.setAttribute('x', x); label.setAttribute('y', y + 3);
+      label.setAttribute('class', 'fb-landmark-label');
+      label.textContent = FB_LETTER[noteKey[0]];
+      chip.appendChild(label);
+
+      g.appendChild(chip);
+    });
   });
 }
 
-function renderProgress() {
-  document.getElementById('scaleProgress').innerHTML = practiceNotes.map((entry) => {
-    const label = scalesData.notes[entry.note]?.label || entry.note;
-    return `<div class="progress-dot">${label}</div>`;
+function updateFingerboard(entry) {
+  const cx        = FB_STRING_X[entry.string] ?? 120;
+  const cy        = fingerboardY(entry);
+  const isNatural = FB_NATURAL_RE.test(entry.note);
+
+  // 幹音（♯♭なし）ならその音名の丸自体を明るく表示し、
+  // ♯♭の音は指板上に丸がないので、これまでどおり浮動マーカーで示す。
+  document.querySelectorAll('.fb-landmark').forEach(chip => {
+    const isCurrent = isNatural && chip.dataset.string === entry.string && chip.dataset.note === entry.note;
+    chip.classList.toggle('current', isCurrent);
+    if (isCurrent) chip.parentNode.appendChild(chip); // 他の丸より手前に描画する
+  });
+
+  const marker = document.getElementById('fingerMarker');
+  marker.setAttribute('cx', cx);
+  marker.setAttribute('cy', cy);
+  marker.style.display = isNatural ? 'none' : '';
+
+  document.querySelectorAll('.fb-string').forEach(line => {
+    line.classList.toggle('active', line.dataset.string === entry.string);
+  });
+}
+
+// 音符が右から流れてくる譜面風トラックを描画する。
+// 常に5個表示し、中央が今弾く音、左側が弾き終えた音、右側がこれから弾く音。
+// 上行・下行どちらでも縦位置は揃え、横一列に流れるようにする。
+// オクターブは音名の下の小さな数字で区別する。
+const NOTE_VISIBLE = 5;  // 常に表示する音符の数
+const NOTE_SLOT     = 92; // 音符1つあたりの横幅
+const NOTE_FOCUS     = Math.floor(NOTE_VISIBLE / 2) * NOTE_SLOT + NOTE_SLOT / 2; // 「今弾く音」＝中央の位置
+const NOTE_TOP       = 60; // すべての音符の縦位置（固定）
+
+function renderNoteTrack() {
+  const track = document.getElementById('noteTrack');
+
+  track.innerHTML = practiceNotes.map((entry, i) => {
+    const noteData = scalesData.notes[entry.note];
+    const octave   = entry.note.match(/\d+$/)?.[0] || '';
+    return `<div class="note-chip" style="left:${i * NOTE_SLOT}px; top:${NOTE_TOP}px;">
+      <span class="note-chip-label">${noteData.label}</span>
+      <span class="note-chip-octave">${octave}</span>
+    </div>`;
   }).join('');
+
+  updateNoteTrackView();
+}
+
+function updateNoteTrackView() {
+  const track = document.getElementById('noteTrack');
+  track.style.transform = `translateX(${NOTE_FOCUS - currentIndex * NOTE_SLOT}px)`;
+
+  document.querySelectorAll('.note-chip').forEach((chip, i) => {
+    chip.classList.toggle('done', i < currentIndex);
+    chip.classList.toggle('current', i === currentIndex);
+  });
 }
 
 async function completePractice() {
@@ -468,6 +589,16 @@ document.getElementById('bpmRange').addEventListener('input', (e) => {
 document.getElementById('startBtn').addEventListener('click', startPractice);
 document.getElementById('stopBtn').addEventListener('click', stopPractice);
 
+document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const view = btn.dataset.view;
+    document.getElementById('noteStaff').style.display   = view === 'notes'       ? 'block' : 'none';
+    document.getElementById('fingerboard').style.display = view === 'fingerboard' ? 'block' : 'none';
+  });
+});
+
 document.getElementById('retryBtn').addEventListener('click', () => {
   statsLoaded = false;
   document.getElementById('setupCard').style.display   = 'block';
@@ -553,6 +684,7 @@ document.getElementById('deleteProfileBtn').addEventListener('click', async () =
 // ===========================
 loadScales();
 initProfiles();
+renderFingerboardTicks();
 
 
 //442hz

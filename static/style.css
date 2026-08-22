@@ -121,28 +121,118 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-danger   { background: var(--burgundy); color: var(--text-primary); margin-top: 12px; }
 .btn-sm       { width: auto; font-size: 0.85rem; padding: 8px 16px; margin: 16px auto 0; display: block; }
 
-.scale-progress {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-
-.progress-dot {
-  width: 36px; height: 36px;
-  border-radius: 50%;
+/* ===== 音符が流れる譜面風トラック（常に5個表示・中央が今弾く音） ===== */
+.note-staff {
+  position: relative;
+  width: 460px;
+  max-width: 100%;
+  height: 140px;
+  margin: 0 auto 16px;
+  overflow: hidden;
   background: var(--bg-input);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.75rem; color: var(--text-secondary);
-  transition: all 0.3s;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
 }
 
-.progress-dot.done    { background: var(--success); color: var(--bg-deep); }
-.progress-dot.current { background: var(--gold-bright); color: var(--bg-deep); font-weight: bold; transform: scale(1.2); }
+.note-playhead {
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--gold), transparent);
+  opacity: 0.6;
+}
 
-.result-note  { font-size: 5rem; font-weight: bold; color: var(--gold-bright); text-align: center; text-shadow: 0 2px 10px rgba(0,0,0,0.4); }
-.result-label { font-size: 1rem; color: var(--text-secondary); text-align: center; margin: 4px 0; }
+.note-track {
+  position: absolute;
+  inset: 0;
+  transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+}
+
+.note-chip {
+  position: absolute;
+  width: 54px; height: 54px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 2px solid var(--border-soft);
+  color: var(--text-secondary);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transition: width 0.3s, height 0.3s, background 0.3s, border-color 0.3s, opacity 0.3s, box-shadow 0.3s;
+}
+.note-chip-label  { font-size: 1rem; font-weight: bold; line-height: 1.1; }
+.note-chip-octave { font-size: 0.55rem; color: var(--text-muted); line-height: 1; margin-top: 1px; }
+
+.note-chip.done { opacity: 0.3; }
+
+.note-chip.current {
+  width: 96px; height: 96px;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  border-color: var(--gold-bright);
+  box-shadow: 0 4px 20px rgba(212,162,78,0.5);
+  z-index: 2;
+}
+.note-chip.current .note-chip-label  { font-size: 2.5rem; color: var(--bg-deep); }
+.note-chip.current .note-chip-octave { font-size: 0.8rem; color: var(--bg-deep); opacity: 0.7; margin-top: 2px; }
+
+/* ===== 表示切り替え（音符 / 指板） ===== */
+.view-toggle { display: flex; justify-content: center; gap: 8px; margin-bottom: 12px; }
+.view-toggle-btn {
+  width: auto; margin: 0; padding: 6px 18px; font-size: 0.85rem;
+  border-radius: 20px; border: 1px solid var(--border-soft);
+  background: var(--bg-input); color: var(--text-secondary); font-weight: bold;
+}
+.view-toggle-btn.active { background: var(--gold); color: var(--bg-deep); border-color: var(--gold); }
+
+/* ===== バイオリンの指板 ===== */
+.fingerboard { margin-bottom: 16px; }
+.fingerboard-svg { width: 100%; height: auto; display: block; }
+
+.fb-neck { fill: var(--bg-input); stroke: var(--border-soft); }
+.fb-nut  { fill: var(--gold); }
+
+.fb-string {
+  stroke: var(--text-secondary); stroke-width: 3; stroke-linecap: round;
+  transition: stroke 0.3s, stroke-width 0.3s;
+}
+.fb-string.active { stroke: var(--gold-bright); stroke-width: 5; }
+
+.fb-string-label { fill: var(--text-secondary); font-size: 14px; font-weight: bold; text-anchor: middle; }
+.fb-position-guide { stroke: var(--border-soft); stroke-width: 1; stroke-dasharray: 2 5; }
+
+.fb-landmark-circle {
+  fill: var(--bg-card);
+  stroke: var(--border-soft);
+  stroke-width: 1.5;
+  transition: r 0.3s, fill 0.3s, stroke 0.3s, filter 0.3s;
+}
+.fb-landmark-label {
+  fill: var(--text-secondary);
+  font-size: 9px;
+  font-weight: bold;
+  text-anchor: middle;
+  pointer-events: none;
+  transition: font-size 0.3s, fill 0.3s;
+}
+
+.fb-landmark.current .fb-landmark-circle {
+  r: 15;
+  fill: var(--gold-bright);
+  stroke: var(--gold-bright);
+  filter: drop-shadow(0 0 6px rgba(232,196,104,0.8));
+}
+.fb-landmark.current .fb-landmark-label {
+  font-size: 14px;
+  fill: var(--bg-deep);
+}
+
+.finger-marker {
+  fill: var(--gold-bright);
+  stroke: var(--bg-deep);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 6px rgba(232,196,104,0.8));
+  transition: cx 0.35s cubic-bezier(.4,0,.2,1), cy 0.35s cubic-bezier(.4,0,.2,1);
+}
+
 .result-freq  { font-size: 0.9rem; color: var(--text-muted); text-align: center; margin-bottom: 8px; }
 
 .result-status {

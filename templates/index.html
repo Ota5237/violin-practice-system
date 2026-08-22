@@ -75,9 +75,40 @@
       <!-- 練習画面 -->
       <section class="card" id="practiceCard" style="display:none">
         <div class="mode-badge" id="modeBadge"></div>
-        <div class="scale-progress" id="scaleProgress"></div>
-        <div class="result-note" id="resultNote">--</div>
-        <div class="result-label" id="resultLabel">準備してください</div>
+
+        <div class="view-toggle">
+          <button type="button" class="view-toggle-btn active" data-view="notes">🎵 音符</button>
+          <button type="button" class="view-toggle-btn" data-view="fingerboard">🎻 指板</button>
+        </div>
+
+        <div class="note-staff" id="noteStaff">
+          <div class="note-playhead"></div>
+          <div class="note-track" id="noteTrack"></div>
+        </div>
+
+        <div class="fingerboard" id="fingerboard" style="display:none">
+          <svg viewBox="0 0 240 260" class="fingerboard-svg">
+            <rect x="20" y="20" width="200" height="215" rx="10" class="fb-neck"/>
+            <rect x="20" y="24" width="200" height="6" class="fb-nut"/>
+
+            <g id="fbTicks"></g>
+
+            <line data-string="G弦" x1="45"  y1="30" x2="45"  y2="225" class="fb-string"/>
+            <line data-string="D弦" x1="95"  y1="30" x2="95"  y2="225" class="fb-string"/>
+            <line data-string="A弦" x1="145" y1="30" x2="145" y2="225" class="fb-string"/>
+            <line data-string="E弦" x1="195" y1="30" x2="195" y2="225" class="fb-string"/>
+
+            <text x="45"  y="14" class="fb-string-label">G</text>
+            <text x="95"  y="14" class="fb-string-label">D</text>
+            <text x="145" y="14" class="fb-string-label">A</text>
+            <text x="195" y="14" class="fb-string-label">E</text>
+
+            <g id="fbLandmarks"></g>
+
+            <circle id="fingerMarker" cx="45" cy="30" r="13" class="finger-marker"/>
+          </svg>
+        </div>
+
         <div class="result-freq" id="resultFreq">周波数: -- Hz</div>
         <div class="result-status" id="resultStatus"></div>
         <div class="fingering-info" id="fingeringInfo"></div>
