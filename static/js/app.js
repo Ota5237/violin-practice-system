@@ -365,18 +365,26 @@ function updateFingerboard(entry) {
 // 常に5個表示し、中央が今弾く音、左側が弾き終えた音、右側がこれから弾く音。
 // 上行・下行どちらでも縦位置は揃え、横一列に流れるようにする。
 // オクターブは音名の下の小さな数字で区別する。
+// スマホなど #noteStaff の実際の横幅が460pxより狭い場合、CSSのmax-width:100%で
+// 見た目は縮むが、子要素はpx固定のままだとズレる。そのため実際の表示幅から
+// 毎回スロット幅を計算し直す。
 const NOTE_VISIBLE = 5;  // 常に表示する音符の数
-const NOTE_SLOT     = 92; // 音符1つあたりの横幅
-const NOTE_FOCUS     = Math.floor(NOTE_VISIBLE / 2) * NOTE_SLOT + NOTE_SLOT / 2; // 「今弾く音」＝中央の位置
-const NOTE_TOP       = 60; // すべての音符の縦位置（固定）
+const NOTE_TOP      = 60; // すべての音符の縦位置（固定）
+
+function noteTrackMetrics() {
+  const width = document.getElementById('noteStaff').clientWidth || NOTE_VISIBLE * 92;
+  const slot  = width / NOTE_VISIBLE;
+  return { slot, focus: width / 2 };
+}
 
 function renderNoteTrack() {
   const track = document.getElementById('noteTrack');
+  const { slot } = noteTrackMetrics();
 
   track.innerHTML = practiceNotes.map((entry, i) => {
     const noteData = scalesData.notes[entry.note];
     const octave   = entry.note.match(/\d+$/)?.[0] || '';
-    return `<div class="note-chip" style="left:${i * NOTE_SLOT}px; top:${NOTE_TOP}px;">
+    return `<div class="note-chip" style="left:${i * slot}px; top:${NOTE_TOP}px;">
       <span class="note-chip-label">${noteData.label}</span>
       <span class="note-chip-octave">${octave}</span>
     </div>`;
@@ -387,13 +395,19 @@ function renderNoteTrack() {
 
 function updateNoteTrackView() {
   const track = document.getElementById('noteTrack');
-  track.style.transform = `translateX(${NOTE_FOCUS - currentIndex * NOTE_SLOT}px)`;
+  const { slot, focus } = noteTrackMetrics();
+  track.style.transform = `translateX(${focus - currentIndex * slot}px)`;
 
   document.querySelectorAll('.note-chip').forEach((chip, i) => {
     chip.classList.toggle('done', i < currentIndex);
     chip.classList.toggle('current', i === currentIndex);
   });
 }
+
+window.addEventListener('resize', () => {
+  // 画面の向きが変わるなどして #noteStaff の幅が変わったら、スロット幅を再計算して並べ直す
+  if (document.getElementById('practiceCard').style.display !== 'none') renderNoteTrack();
+});
 
 async function completePractice() {
   detector.stop();
