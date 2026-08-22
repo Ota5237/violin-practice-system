@@ -5,10 +5,29 @@ class PitchDetector {
     this.stream = null;
     this.buffer = null;
     this.isRunning = false;
+    this.startToken = 0; // 呼び出しごとに増分し、古い start() 呼び出しを無効化する
   }
 
+  // getUserMedia() の待ち時間中に stop() や別の start() が呼ばれると、
+  // 古い呼び出しが後から解決してマイクを二重起動してしまう。
+  // start()ごとにトークンを発行し、待っている間にトークンが変わっていたら
+  // その呼び出しは中断されたとみなして何もしない。
   async start(onPitchDetected) {
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const token = ++this.startToken;
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      return;
+    }
+
+    if (token !== this.startToken) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+
+    this.stream = stream;
     this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     this.analyser = this.audioContext.createAnalyser();
     this.analyser.fftSize = 2048;
@@ -20,7 +39,7 @@ class PitchDetector {
     this.isRunning = true;
 
     const detect = () => {
-      if (!this.isRunning) return;
+      if (!this.isRunning || token !== this.startToken) return;
       this.analyser.getFloatTimeDomainData(this.buffer);
       const freq = this.autoCorrelate(this.buffer, this.audioContext.sampleRate);
       if (freq > 0) onPitchDetected(freq);
@@ -30,9 +49,12 @@ class PitchDetector {
   }
 
   stop() {
+    this.startToken++; // 進行中の start() があれば無効化する
     this.isRunning = false;
     if (this.stream) this.stream.getTracks().forEach(t => t.stop());
     if (this.audioContext) this.audioContext.close();
+    this.stream = null;
+    this.audioContext = null;
   }
 
   autoCorrelate(buffer, sampleRate) {

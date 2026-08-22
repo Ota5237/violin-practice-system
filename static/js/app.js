@@ -154,7 +154,12 @@ function startTempoMode() {
   let beat       = 0;
   let countdown  = 3;
 
+  // 指板・音符トラックに最初の音をすぐ反映する（前回の練習の表示が
+  // カウントダウン中に一瞬見えてしまうのを防ぐ）
+  showCurrentNote();
+
   const countdownEl = document.getElementById('countdown');
+  countdownEl.textContent = countdown; // 前回のカウントダウンの残り表示が一瞬見えるのを防ぐ
   countdownEl.style.display = 'block';
 
   // マイク起動（常時聴いておく）
@@ -302,6 +307,14 @@ const FB_NATURAL_NOTES = ['G3','A3','H3','C4','D4','E4','F4','G4','A4','H4','C5'
 const FB_LETTER        = { G: 'G', A: 'A', H: 'H', C: 'C', D: 'D', E: 'E', F: 'F' };
 const FB_NATURAL_RE    = /^[A-H]\d$/; // 例: "C4" は幹音、"Cs4"/"Df4" はシャープ/フラット
 
+// "Fs4" → "F♯"、"Df4" → "D♭" のように表示用ラベルへ変換する
+function noteDisplayLabel(noteKey) {
+  const m = noteKey.match(/^([A-H])(s|f)?\d$/);
+  if (!m) return noteKey;
+  const accidental = m[2] === 's' ? '♯' : m[2] === 'f' ? '♭' : '';
+  return FB_LETTER[m[1]] + accidental;
+}
+
 function renderFingerboardLandmarks() {
   const g = document.getElementById('fbLandmarks');
   if (!g || g.childNodes.length > 0) return;
@@ -351,10 +364,14 @@ function updateFingerboard(entry) {
     if (isCurrent) chip.parentNode.appendChild(chip); // 他の丸より手前に描画する
   });
 
-  const marker = document.getElementById('fingerMarker');
-  marker.setAttribute('cx', cx);
-  marker.setAttribute('cy', cy);
-  marker.style.display = isNatural ? 'none' : '';
+  // 丸と音名テキストは1つの<g>にまとめてtransformで一緒に動かす。
+  // 別々にcx/cyとx/yを遷移させると、丸は移動中でも文字だけ先に
+  // 次の音名に切り替わってしまい、丸と文字がずれて見えることがあったため。
+  const markerGroup = document.getElementById('fingerMarkerGroup');
+  const markerLabel = document.getElementById('fingerMarkerLabel');
+  markerGroup.style.transform = `translate(${cx}px, ${cy}px)`;
+  markerLabel.textContent     = isNatural ? '' : noteDisplayLabel(entry.note);
+  markerGroup.style.display   = isNatural ? 'none' : '';
 
   document.querySelectorAll('.fb-string').forEach(line => {
     line.classList.toggle('active', line.dataset.string === entry.string);
