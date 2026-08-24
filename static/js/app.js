@@ -194,7 +194,8 @@ function startTempoMode() {
           return;
         }
 
-        showCurrentNote();
+        // evaluateBeat()が出した直前の音の判定(✅/❌)は消さずに残す
+        showCurrentNote(false);
         playClick(beat % 4 === 0);
       }, interval);
     }
@@ -254,11 +255,13 @@ function nextNote() {
   }
 }
 
-function showCurrentNote() {
+function showCurrentNote(clearStatus = true) {
   if (currentIndex >= practiceNotes.length) return;
   const entry = practiceNotes[currentIndex];
-  document.getElementById('resultStatus').textContent  = '';
-  document.getElementById('resultStatus').className    = 'result-status';
+  if (clearStatus) {
+    document.getElementById('resultStatus').textContent = '';
+    document.getElementById('resultStatus').className   = 'result-status';
+  }
   document.getElementById('fingeringInfo').textContent = `${entry.string} · ${entry.position}`;
   document.getElementById('resultFreq').textContent    = '周波数: -- Hz';
 
