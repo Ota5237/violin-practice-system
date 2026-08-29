@@ -82,8 +82,12 @@
         </div>
 
         <div class="note-staff" id="noteStaff">
+          <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
+            <g id="staffLines"></g>
+            <text class="staff-clef" x="6" y="98">𝄞</text>
+            <g class="note-track" id="noteTrack"></g>
+          </svg>
           <div class="note-playhead"></div>
-          <div class="note-track" id="noteTrack"></div>
         </div>
 
         <div class="fingerboard" id="fingerboard" style="display:none">
@@ -128,7 +132,9 @@
           <div class="accuracy-num" id="accuracyNum"></div>
           <div class="accuracy-label">正答率</div>
         </div>
-        <button id="retryBtn" class="btn-primary">戻る</button>
+        <div class="result-detail" id="resultDetail"></div>
+        <button id="retryPracticeBtn" class="btn-primary">🔁 もう一回練習</button>
+        <button id="retryBtn" class="btn-secondary">戻る</button>
       </section>
 
       <!-- 練習履歴 -->
@@ -157,6 +163,25 @@
       <section class="card">
         <h2>🎼 調ごとの正答率</h2>
         <canvas id="chartScale"></canvas>
+        <p class="chart-note" id="chartScaleNote" style="display:none">
+          ※テンポモードの練習のみ集計しています（1音ずつモードは正解するまでやり直せる仕様のため対象外）
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>🎯 苦手な音</h2>
+        <canvas id="chartNotes"></canvas>
+        <p class="chart-note" id="chartNotesEmpty" style="display:none">
+          まだデータが足りません。同じ音を複数回練習すると表示されます。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>🎻 弦ごとの正答率</h2>
+        <canvas id="chartStrings"></canvas>
+        <p class="chart-note" id="chartStringsEmpty" style="display:none">
+          まだデータがありません。
+        </p>
       </section>
 
       <button id="clearStatsBtn" class="btn-danger btn-sm">履歴を消去</button>

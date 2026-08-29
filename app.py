@@ -32,6 +32,18 @@ def init_db():
             )
         ''')
 
+        # 練習1回ごとの、音ごとの結果（苦手な音の分析に使う）
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS note_results (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                history_id INTEGER NOT NULL,
+                note       TEXT    NOT NULL,
+                string     TEXT    NOT NULL,
+                outcome    TEXT    NOT NULL,
+                cents      REAL
+            )
+        ''')
+
         # 旧スキーマ（mode/bpm/profile_id等の列がない）のDBを移行
         existing_cols = {row[1] for row in conn.execute('PRAGMA table_info(history)')}
         migrations = {
@@ -97,6 +109,10 @@ def delete_profile(profile_id):
         if count <= 1:
             return jsonify({'error': '最後のプロフィールは削除できません'}), 400
 
+        conn.execute('''
+            DELETE FROM note_results WHERE history_id IN
+              (SELECT id FROM history WHERE profile_id = ?)
+        ''', (profile_id,))
         conn.execute('DELETE FROM history WHERE profile_id = ?', (profile_id,))
         conn.execute('DELETE FROM profiles WHERE id = ?', (profile_id,))
         conn.commit()
@@ -126,15 +142,27 @@ def save_history():
     bpm          = data.get('bpm')
     notes_correct= data.get('notes_correct', 0)
     notes_total  = data.get('notes_total', 0)
+    note_results = data.get('note_results') or []
     accuracy     = round(notes_correct / notes_total * 100, 1) if notes_total > 0 else 0.0
     practiced_at = datetime.now().strftime('%Y/%m/%d %H:%M')
 
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('''
+        cur = conn.execute('''
             INSERT INTO history
               (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at))
+        history_id = cur.lastrowid
+
+        if note_results:
+            conn.executemany('''
+                INSERT INTO note_results (history_id, note, string, outcome, cents)
+                VALUES (?, ?, ?, ?, ?)
+            ''', [
+                (history_id, r.get('note'), r.get('string'), r.get('outcome'), r.get('cents'))
+                for r in note_results
+            ])
+
         conn.commit()
 
     return jsonify({
@@ -152,6 +180,10 @@ def clear_history():
         return jsonify({'error': 'profile_id is required'}), 400
 
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''
+            DELETE FROM note_results WHERE history_id IN
+              (SELECT id FROM history WHERE profile_id = ?)
+        ''', (profile_id,))
         conn.execute('DELETE FROM history WHERE profile_id = ?', (profile_id,))
         conn.commit()
     return jsonify({'message': 'deleted'}), 200
@@ -164,11 +196,13 @@ def get_stats():
         conn.row_factory = sqlite3.Row
 
         # 日別の練習回数と平均正答率（直近30日）
+        # 練習回数は全モード合算、正答率は「1音ずつモード」を除く
+        # （1音ずつは正解するまでやり直せる仕様上、正答率が常に100%になり参考にならないため）
         daily = conn.execute('''
             SELECT
                 substr(practiced_at, 1, 10) as date,
                 COUNT(*) as count,
-                ROUND(AVG(accuracy), 1) as avg_accuracy
+                ROUND(AVG(CASE WHEN mode = 'tempo' THEN accuracy END), 1) as avg_accuracy
             FROM history
             WHERE profile_id = ?
             GROUP BY date
@@ -176,14 +210,14 @@ def get_stats():
             LIMIT 30
         ''', (profile_id,)).fetchall()
 
-        # 調ごとの平均正答率
+        # 調ごとの平均正答率（テンポモードのみ集計。理由は上記と同じ）
         by_scale = conn.execute('''
             SELECT
                 scale,
                 COUNT(*) as count,
                 ROUND(AVG(accuracy), 1) as avg_accuracy
             FROM history
-            WHERE profile_id = ?
+            WHERE profile_id = ? AND mode = 'tempo'
             GROUP BY scale
             ORDER BY avg_accuracy DESC
         ''', (profile_id,)).fetchall()
@@ -191,6 +225,49 @@ def get_stats():
     return jsonify({
         'daily': [dict(r) for r in daily],
         'by_scale': [dict(r) for r in by_scale]
+    })
+
+# ===== 音ごとの苦手分析 =====
+@app.route('/api/stats/notes', methods=['GET'])
+def get_note_stats():
+    profile_id = request.args.get('profile_id', type=int, default=1)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # 音名ごとの正解率（「1音ずつ」のやり直しと「テンポ」の不正解を、
+        # どちらも"つまずき"として合算する。最低2回は弾いていないと参考にならないため除外）
+        by_note = conn.execute('''
+            SELECT
+                nr.note,
+                COUNT(*) as attempts,
+                SUM(CASE WHEN nr.outcome != 'correct' THEN 1 ELSE 0 END) as misses,
+                ROUND(100.0 * SUM(CASE WHEN nr.outcome = 'correct' THEN 1 ELSE 0 END) / COUNT(*), 1) as accuracy
+            FROM note_results nr
+            JOIN history h ON h.id = nr.history_id
+            WHERE h.profile_id = ?
+            GROUP BY nr.note
+            HAVING attempts >= 2
+            ORDER BY accuracy ASC, attempts DESC
+            LIMIT 15
+        ''', (profile_id,)).fetchall()
+
+        # 弦ごとの正解率
+        by_string = conn.execute('''
+            SELECT
+                nr.string,
+                COUNT(*) as attempts,
+                SUM(CASE WHEN nr.outcome != 'correct' THEN 1 ELSE 0 END) as misses,
+                ROUND(100.0 * SUM(CASE WHEN nr.outcome = 'correct' THEN 1 ELSE 0 END) / COUNT(*), 1) as accuracy
+            FROM note_results nr
+            JOIN history h ON h.id = nr.history_id
+            WHERE h.profile_id = ?
+            GROUP BY nr.string
+            ORDER BY nr.string
+        ''', (profile_id,)).fetchall()
+
+    return jsonify({
+        'by_note':   [dict(r) for r in by_note],
+        'by_string': [dict(r) for r in by_string]
     })
 
 if __name__ == '__main__':

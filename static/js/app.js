@@ -1,15 +1,18 @@
+// マイクの音を拾って周波数（Hz）を判定してくれるオブジェクト（pitch.js で定義）
 const detector = new PitchDetector();
-let scalesData      = {};
-let practiceNotes   = [];
-let currentIndex    = 0;
-let isPracticing    = false;
-let currentProfileId = null;
+let scalesData      = {}; // notes.json / 各音階ファイルを読み込んだ結果をまとめて保持する
+let practiceNotes   = []; // 今回の練習で弾く音の並び（startPractice()で組み立てる）
+let currentIndex    = 0;  // practiceNotes のうち、今どの音を練習中か
+let isPracticing    = false; // 今マイクの判定結果を受け付けてよいか（判定中の二重反応を防ぐ）
+let currentProfileId = null; // 選択中のプロフィール（ユーザー）のID
 
 // テンポモード用
-let tempoInterval  = null;
-let countTimer     = null;
-let notesCorrect   = 0;
-let detectedFreqNow = null;
+let tempoInterval  = null; // メトロノームのsetInterval ID（stopPractice等で止めるために保持）
+let countTimer     = null; // 開始前カウントダウンのsetInterval ID
+let notesCorrect   = 0;    // 今回の練習で正解した音の数（正答率の計算に使う）
+let detectedFreqNow = null; // テンポモードで「直近に検出できた周波数」を一時保存しておく変数
+let practiceResults = []; // 結果画面の詳細表示用：今回の練習で音ごとに何が起きたかの記録
+let currentNoteMissed = false; // 1音ずつモードで、今の音を一発で取れず「惜しい/ズレ大」を経由したか
 
 // ===== 音階データ読み込み =====
 // カテゴリーを追加する場合はここに1行足す（例: 第3ポジション）
@@ -18,6 +21,9 @@ const CATEGORY_FILES = [
   { key: 'two_octave',     file: '/static/data/scales/two_octave.json' },
 ];
 
+// ページ読み込み時に音階データ一式（音名→周波数の対応表 notes.json と、
+// 各カテゴリーの音階定義ファイル）をまとめて取得し、scalesData に格納する。
+// 完了したらセレクトボックスと指板の目印を描画する。
 async function loadScales() {
   const [notesRes, ...categoryResults] = await Promise.all([
     fetch('/static/data/notes.json'),
@@ -36,14 +42,18 @@ async function loadScales() {
 }
 
 // ===== カテゴリー・調セレクト =====
+// 「カテゴリー」セレクトボックス（第1ポジションなど）で今選ばれているキーを返す
 function getCurrentCategoryKey() {
   return document.getElementById('categorySelect').value;
 }
 
+// 現在選択中のカテゴリーに属する音階一覧（{キー: 音階データ} の形）を返す
 function getCurrentScales() {
   return scalesData.categories?.[getCurrentCategoryKey()]?.scales || {};
 }
 
+// 「調」セレクトボックスの中身を、現在のカテゴリーの音階一覧で作り直す
+// （カテゴリーを切り替えたときに呼ばれる）
 function populateScaleSelect() {
   const scales     = getCurrentScales();
   const scaleSelect = document.getElementById('scaleSelect');
@@ -76,6 +86,9 @@ function splitScaleNotes(scale) {
 }
 
 // ===== 練習開始 =====
+// 「開始」ボタンで呼ばれる。フォームの選択内容（音階・方向・モード）を読み取り、
+// 練習する音の並び(practiceNotes)を組み立ててから、モードに応じて
+// startStepMode() か startTempoMode() を開始する。
 function startPractice() {
   const scaleKey  = document.getElementById('scaleSelect').value;
   const direction = document.querySelector('input[name="direction"]:checked').value;
@@ -92,6 +105,8 @@ function startPractice() {
 
   currentIndex = 0;
   notesCorrect = 0;
+  practiceResults = [];
+  currentNoteMissed = false;
 
   document.getElementById('setupCard').style.display    = 'none';
   document.getElementById('practiceCard').style.display = 'block';
@@ -111,22 +126,29 @@ function startPractice() {
 
 // ===========================
 // 1音ずつモード
+// （正しい音程が取れるまで待ち、正解したら次の音へ進むモード）
 // ===========================
+// マイクを起動し、判定コールバックを登録して1音ずつモードを開始する
 function startStepMode() {
   isPracticing = true;
   showCurrentNote();
 
+  // detector から継続的に周波数(freq)が渡ってくるので、都度判定する
   detector.start((freq) => {
-    if (!isPracticing) return;
+    if (!isPracticing) return; // 正解直後など、次の音に進む間は判定を無視する
     onPitchDetectedStep(freq);
   });
 }
 
+// 検出された周波数を「今弾くべき音」の正しい周波数と比較し、結果を画面に表示する。
+// 音程のズレは半音を100分割した単位「セント」で評価する
+// （±15セント以内なら正解、±35セント以内なら惜しい、それ以上はズレ大）。
 function onPitchDetectedStep(freq) {
-  const noteData = scalesData.notes[practiceNotes[currentIndex].note];
+  const entry    = practiceNotes[currentIndex];
+  const noteData = scalesData.notes[entry.note];
   document.getElementById('resultFreq').textContent = `周波数: ${freq.toFixed(1)} Hz`;
 
-  const cents    = 1200 * Math.log2(freq / noteData.freq);
+  const cents    = 1200 * Math.log2(freq / noteData.freq); // 正の値=高すぎ、負の値=低すぎ
   const absCents = Math.abs(cents);
   const statusEl = document.getElementById('resultStatus');
 
@@ -134,20 +156,27 @@ function onPitchDetectedStep(freq) {
     statusEl.textContent = '✅ 正解！';
     statusEl.className   = 'result-status correct';
     notesCorrect++;
-    isPracticing = false;
-    setTimeout(nextNote, 800);
+    practiceResults.push({ note: entry.note, string: entry.string, outcome: currentNoteMissed ? 'retry' : 'correct', cents });
+    isPracticing = false; // 次の音に切り替わるまで、それ以上の判定を止める
+    setTimeout(nextNote, 800); // 正解表示を一瞬見せてから次の音へ
   } else if (absCents <= 35) {
     statusEl.textContent = cents > 0 ? '▲ 少し高い' : '▼ 少し低い';
     statusEl.className   = 'result-status close';
+    currentNoteMissed = true;
   } else {
     statusEl.textContent = cents > 0 ? '高すぎ ▲' : '低すぎ ▼';
     statusEl.className   = 'result-status wrong';
+    currentNoteMissed = true;
   }
 }
 
 // ===========================
 // テンポモード
+// （メトロノームに合わせて、一定のテンポで次々と音を弾いていくモード。
+//  正解を待たずに拍ごとに強制的に次の音へ進む）
 // ===========================
+// BPM（1分間の拍数）からメトロノームの間隔を計算し、
+// カウントダウン→本番のメトロノーム開始、という流れを組み立てる
 function startTempoMode() {
   const bpm      = parseInt(document.getElementById('bpmRange').value);
   const interval = (60 / bpm) * 1000;
@@ -159,7 +188,6 @@ function startTempoMode() {
   showCurrentNote();
 
   const countdownEl = document.getElementById('countdown');
-  countdownEl.textContent = countdown; // 前回のカウントダウンの残り表示が一瞬見えるのを防ぐ
   countdownEl.style.display = 'block';
 
   // マイク起動（常時聴いておく）
@@ -168,19 +196,24 @@ function startTempoMode() {
     document.getElementById('resultFreq').textContent = `周波数: ${freq.toFixed(1)} Hz`;
   });
 
-  // カウントダウン
+  // カウントダウン（3・2・1と数えて4拍目で開始する）。
+  // 数字の表示とクリック音を必ず同時に出す。以前は数字を表示してから
+  // 1拍分後にクリック音を鳴らしていたため、表示と音が1拍分ずれて聞こえていた。
+  countdownEl.textContent = countdown;
+  playClick(true); // 「3」の合図
+
   countTimer = setInterval(() => {
+    countdown--;
     if (countdown > 0) {
       countdownEl.textContent = countdown;
       playClick(true); // 強拍
-      countdown--;
     } else {
       clearInterval(countTimer);
       countTimer = null;
       countdownEl.style.display = 'none';
       isPracticing = true;
       showCurrentNote();
-      playClick(true);
+      playClick(true); // 4拍目 = スタートの合図
 
       // メトロノーム開始
       tempoInterval = setInterval(() => {
@@ -202,9 +235,13 @@ function startTempoMode() {
   }, interval);
 }
 
+// テンポモードで、直前の拍の間にマイクが拾えていた周波数(detectedFreqNow)を
+// 「弾くべきだった音」と比較し、✅/❌を表示してから次の音へインデックスを進める。
+// （1音ずつモードと違って正解を待たず、必ず1拍ごとに進む）
 function evaluateBeat() {
   if (currentIndex >= practiceNotes.length) return;
-  const noteData = scalesData.notes[practiceNotes[currentIndex].note];
+  const entry    = practiceNotes[currentIndex];
+  const noteData = scalesData.notes[entry.note];
   const statusEl = document.getElementById('resultStatus');
 
   if (detectedFreqNow && detectedFreqNow > 0) {
@@ -213,13 +250,16 @@ function evaluateBeat() {
       statusEl.textContent = '✅';
       statusEl.className   = 'result-status correct';
       notesCorrect++;
+      practiceResults.push({ note: entry.note, string: entry.string, outcome: 'correct', cents });
     } else {
       statusEl.textContent = '❌';
       statusEl.className   = 'result-status wrong';
+      practiceResults.push({ note: entry.note, string: entry.string, outcome: 'wrong', cents });
     }
   } else {
     statusEl.textContent = '❌ 音なし';
     statusEl.className   = 'result-status wrong';
+    practiceResults.push({ note: entry.note, string: entry.string, outcome: 'wrong', cents: null });
   }
 
   currentIndex++;
@@ -227,9 +267,27 @@ function evaluateBeat() {
 }
 
 // クリック音（Web Audio API）
+// メトロノームの「カチッ」という音を鳴らす。accent=true のときは1拍目として
+// 少し高く・大きい音にする（発音は毎回ゼロから作って0.08秒で鳴らして止める）
+//
+// AudioContextは毎回作り直すと（1) 生成自体に時間がかかりクリック音のタイミングが
+// ずれる、(2) ブラウザ上限（Chromeは同時に持てるAudioContext数に上限がある）に達すると
+// 生成が失敗し、以降クリック音が鳴らなくなる、という2つの不具合の原因になる。
+// そのためAudioContextは1つだけ使い回し、鳴らす音（oscillator/gain）だけ毎回作る。
+let clickAudioCtx = null;
+function getClickAudioCtx() {
+  if (!clickAudioCtx) {
+    clickAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (clickAudioCtx.state === 'suspended') {
+    clickAudioCtx.resume();
+  }
+  return clickAudioCtx;
+}
+
 function playClick(accent = false) {
   try {
-    const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx  = getClickAudioCtx();
     const osc  = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -243,8 +301,9 @@ function playClick(accent = false) {
 }
 
 // ===========================
-// 共通
+// 共通（1音ずつモード・テンポモード両方から使われる）
 // ===========================
+// 次の音へ進む。最後まで終わっていれば練習完了処理を呼ぶ（1音ずつモード用）
 function nextNote() {
   currentIndex++;
   if (currentIndex >= practiceNotes.length) {
@@ -255,9 +314,13 @@ function nextNote() {
   }
 }
 
+// 現在の音(currentIndex)の情報を画面に反映する。
+// 判定結果の表示クリア・運指情報・音符トラック・指板の表示をまとめて更新する。
+// clearStatus=false のときは直前の判定結果（✅/❌）を消さずに残す（テンポモードで使用）
 function showCurrentNote(clearStatus = true) {
   if (currentIndex >= practiceNotes.length) return;
   const entry = practiceNotes[currentIndex];
+  currentNoteMissed = false;
   if (clearStatus) {
     document.getElementById('resultStatus').textContent = '';
     document.getElementById('resultStatus').className   = 'result-status';
@@ -281,6 +344,8 @@ const FB_NUT_Y            = 30;  // 開放弦（0半音）の位置
 const FB_PX_PER_SEMITONE  = 18;  // 半音1つあたりの縦幅
 const FB_MAX_Y             = 225; // 指板の下端
 
+// entry（弦名＋音名）の指の位置を、指板SVG上の縦座標(y)として計算する。
+// 開放弦の周波数との比から半音数を逆算し、半音ごとのpx幅を掛けて位置を出す。
 function fingerboardY(entry) {
   const openFreq = scalesData.notes[FB_STRING_OPEN[entry.string]].freq;
   const noteFreq = scalesData.notes[entry.note].freq;
@@ -288,6 +353,7 @@ function fingerboardY(entry) {
   return Math.min(FB_NUT_Y + semitones * FB_PX_PER_SEMITONE, FB_MAX_Y);
 }
 
+// 指板の背景に、半音ごとの目安線（ガイドライン）を描画する（初回のみ・以後は再利用）
 function renderFingerboardTicks() {
   const g = document.getElementById('fbTicks');
   if (!g || g.childNodes.length > 0) return;
@@ -318,6 +384,9 @@ function noteDisplayLabel(noteKey) {
   return FB_LETTER[m[1]] + accidental;
 }
 
+// 4本の弦それぞれについて、幹音（♯♭なしの音）の位置に丸印とラベルを描画する。
+// これが指板上に常時表示される「目印（ランドマーク）」になり、
+// updateFingerboard() が現在の音に該当する丸をハイライトする（初回のみ描画）。
 function renderFingerboardLandmarks() {
   const g = document.getElementById('fbLandmarks');
   if (!g || g.childNodes.length > 0) return;
@@ -354,6 +423,10 @@ function renderFingerboardLandmarks() {
   });
 }
 
+// 今弾くべき音(entry)に合わせて、指板の表示を更新する。
+// 幹音なら該当するランドマークの丸を光らせ、♯♭が付く音なら
+// 浮動マーカー（fingerMarkerGroup）をその位置に移動して音名を表示する。
+// あわせて、対象の弦を光らせる。
 function updateFingerboard(entry) {
   const cx        = FB_STRING_X[entry.string] ?? 120;
   const cy        = fingerboardY(entry);
@@ -383,36 +456,104 @@ function updateFingerboard(entry) {
 
 // 音符が右から流れてくる譜面風トラックを描画する。
 // 常に5個表示し、中央が今弾く音、左側が弾き終えた音、右側がこれから弾く音。
-// 上行・下行どちらでも縦位置は揃え、横一列に流れるようにする。
-// オクターブは音名の下の小さな数字で区別する。
 // スマホなど #noteStaff の実際の横幅が460pxより狭い場合、CSSのmax-width:100%で
 // 見た目は縮むが、子要素はpx固定のままだとズレる。そのため実際の表示幅から
 // 毎回スロット幅を計算し直す。
-const NOTE_VISIBLE = 5;  // 常に表示する音符の数
-const NOTE_TOP      = 60; // すべての音符の縦位置（固定）
+const NOTE_VISIBLE  = 5;   // 常に表示する音符の数
+const STAFF_HEIGHT  = 140; // 五線譜エリアの高さ（CSSの.note-staffの高さと合わせる）
+const STAFF_STEP_PX = 6;   // 五線譜のダイアトニック1段（線と間1つ分の半分）あたりの縦px
+const STAFF_BOTTOM_Y = 95; // 五線の一番下の線（ミ4=E4）のy座標
 
+// このアプリの音名表記（ドイツ音名。C,D,E,F,G,A,H＋♯はs,♭はfの接尾辞）を、
+// 五線譜上の段数（ダイアトニック段。1段＝五線の線と間を合わせて7音分で1オクターブ）に変換する。
+// H＝シ（幹音）、Bf＝シ♭という表記のため、譜面上の位置としてはどちらも「シ」の段に置き、
+// 臨時記号（♯/♭）は別に描く。
+const STAFF_LETTER_STEP = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+function parseNoteForStaff(noteKey) {
+  const [, letter, accidentalChar, octaveStr] = noteKey.match(/^([A-Za-z])([sf]?)(\d+)$/);
+  const octave = parseInt(octaveStr, 10);
+  if (letter === 'H') return { staffLetter: 'B', accidental: null, octave }; // シ
+  if (letter === 'B') return { staffLetter: 'B', accidental: 'f',  octave }; // シ♭
+  return { staffLetter: letter, accidental: accidentalChar || null, octave };
+}
+
+// 五線の一番下の線（E4）を基準0としたダイアトニック段数を返す（1段上がる＝五線上で半段分上）
+function staffOffset(noteKey) {
+  const { staffLetter, octave } = parseNoteForStaff(noteKey);
+  const E4_STEP = 4 * 7 + STAFF_LETTER_STEP.E;
+  return (octave * 7 + STAFF_LETTER_STEP[staffLetter]) - E4_STEP;
+}
+
+function staffY(offset) {
+  return STAFF_BOTTOM_Y - offset * STAFF_STEP_PX;
+}
+
+// 五線からはみ出す音に必要な加線の段数一覧を返す
+// （音自体が線上に来る場合はその段まで、間に来る場合はその手前の線までを描く）
+function ledgerOffsets(offset) {
+  const offs = [];
+  if (offset > 8)      for (let o = 10; o <= offset; o += 2) offs.push(o);
+  else if (offset < 0)  for (let o = -2; o >= offset; o -= 2) offs.push(o);
+  return offs;
+}
+
+// 音符トラックの実際の表示幅から、音符1個あたりの横幅(slot)と
+// 中央（今弾く音を置く位置）の座標(focus)を計算する
 function noteTrackMetrics() {
   const width = document.getElementById('noteStaff').clientWidth || NOTE_VISIBLE * 92;
   const slot  = width / NOTE_VISIBLE;
-  return { slot, focus: width / 2 };
+  return { slot, focus: width / 2, width };
 }
 
+// 五線譜（固定の5本線）を、現在の表示幅いっぱいに描画する
+function renderStaffLines(width) {
+  document.getElementById('staffLines').innerHTML = [0, 2, 4, 6, 8].map(o =>
+    `<line class="staff-line" x1="0" y1="${staffY(o)}" x2="${width}" y2="${staffY(o)}"/>`
+  ).join('');
+}
+
+// practiceNotes 全体分の音符を、五線譜上の正しい高さに一度だけ横一列に並べて描画する
+// （曲が始まるとき・画面サイズが変わったときに呼ばれる）
 function renderNoteTrack() {
   const track = document.getElementById('noteTrack');
-  const { slot } = noteTrackMetrics();
+  const { slot, width } = noteTrackMetrics();
+
+  document.getElementById('staffSvg').setAttribute('viewBox', `0 0 ${width} ${STAFF_HEIGHT}`);
+  renderStaffLines(width);
 
   track.innerHTML = practiceNotes.map((entry, i) => {
+    const x = i * slot; // 各音符の中心x（トラック全体はtranslateXで動かす）
+    const offset = staffOffset(entry.note);
+    const y = staffY(offset);
+    const { accidental } = parseNoteForStaff(entry.note);
     const noteData = scalesData.notes[entry.note];
-    const octave   = entry.note.match(/\d+$/)?.[0] || '';
-    return `<div class="note-chip" style="left:${i * slot}px; top:${NOTE_TOP}px;">
-      <span class="note-chip-label">${noteData.label}</span>
-      <span class="note-chip-octave">${octave}</span>
-    </div>`;
+
+    const ledgers = ledgerOffsets(offset).map(o => {
+      const ly = staffY(o);
+      return `<line class="note-ledger" x1="${x - 12}" y1="${ly}" x2="${x + 12}" y2="${ly}"/>`;
+    }).join('');
+
+    const accidentalGlyph = accidental === 's' ? '♯' : accidental === 'f' ? '♭' : '';
+    const accidentalSvg = accidentalGlyph
+      ? `<text class="note-accidental" x="${x - 13}" y="${y + 4}">${accidentalGlyph}</text>`
+      : '';
+
+    const labelY = y > STAFF_HEIGHT / 2 ? y - 12 : y + 18;
+
+    return `<g class="note-chip" style="transform-origin:${x}px ${y}px">
+      <circle class="note-highlight" cx="${x}" cy="${y}" r="15"/>
+      ${ledgers}
+      ${accidentalSvg}
+      <ellipse class="note-head" cx="${x}" cy="${y}" rx="7" ry="5.5"/>
+      <text class="note-solfege" x="${x}" y="${labelY}">${noteData.label}</text>
+    </g>`;
   }).join('');
 
   updateNoteTrackView();
 }
 
+// currentIndex に合わせて音符トラック全体を横スクロールさせ（translateX）、
+// 弾き終えた音には done、今弾く音には current のクラスを付け替える
 function updateNoteTrackView() {
   const track = document.getElementById('noteTrack');
   const { slot, focus } = noteTrackMetrics();
@@ -429,6 +570,9 @@ window.addEventListener('resize', () => {
   if (document.getElementById('practiceCard').style.display !== 'none') renderNoteTrack();
 });
 
+// 練習（音階1周分）が最後まで終わったときに呼ばれる。
+// マイク・タイマーを止め、正答率を計算してサーバーに履歴として保存し、
+// 完了カード（結果画面）を表示する
 async function completePractice() {
   detector.stop();
   isPracticing = false;
@@ -448,7 +592,7 @@ async function completePractice() {
   const entry = await saveHistory({
     scale: scaleKey, direction: dirLabel, mode,
     bpm, notes_correct: notesCorrect, notes_total: practiceNotes.length,
-    profile_id: currentProfileId
+    profile_id: currentProfileId, note_results: practiceResults
   });
   addHistoryItem(entry);
 
@@ -464,8 +608,49 @@ async function completePractice() {
   } else {
     document.getElementById('accuracyDisplay').style.display = 'none';
   }
+
+  renderResultDetail(mode);
 }
 
+// 完了画面に「どの音が合っていて、どの音がズレていたか」を音符ごとに一覧表示する。
+// テンポモード：✅/❌とセント（音程のズレ幅）を表示
+// 1音ずつモード：最終的には全問正解になるので、一発で取れたか・やり直しがあったかを表示
+function renderResultDetail(mode) {
+  const detailEl = document.getElementById('resultDetail');
+
+  if (practiceResults.length === 0) {
+    detailEl.innerHTML = '';
+    return;
+  }
+
+  const chips = practiceResults.map(r => {
+    const noteData = scalesData.notes[r.note];
+    const octave   = r.note.match(/\d+$/)?.[0] || '';
+    const centsStr = r.cents == null ? '' : `${r.cents > 0 ? '+' : ''}${Math.round(r.cents)}¢`;
+    const subText  = r.outcome === 'retry' ? 'やり直し' : (r.cents == null ? '音なし' : centsStr);
+
+    return `<div class="result-chip ${r.outcome}" title="${r.string}">
+      <span class="result-chip-label">${noteData.label}${octave}</span>
+      <span class="result-chip-sub">${subText}</span>
+    </div>`;
+  }).join('');
+
+  const legend = mode === 'tempo'
+    ? `<div class="result-legend">
+         <span><i class="dot correct"></i>正解 ${practiceResults.filter(r => r.outcome === 'correct').length}</span>
+         <span><i class="dot wrong"></i>不正解 ${practiceResults.filter(r => r.outcome === 'wrong').length}</span>
+       </div>`
+    : `<div class="result-legend">
+         <span><i class="dot correct"></i>一発OK ${practiceResults.filter(r => r.outcome === 'correct').length}</span>
+         <span><i class="dot retry"></i>やり直しあり ${practiceResults.filter(r => r.outcome === 'retry').length}</span>
+       </div>`;
+
+  detailEl.innerHTML = legend + `<div class="result-chip-grid">${chips}</div>`;
+}
+
+// 「中断」ボタンなどで練習を途中でやめるときの処理。
+// マイク・メトロノーム・カウントダウンをすべて止め、設定画面に戻る
+// （completePractice()と違い、履歴には保存しない）
 function stopPractice() {
   detector.stop();
   isPracticing = false;
@@ -477,6 +662,8 @@ function stopPractice() {
   document.getElementById('countdown').style.display    = 'none';
 }
 
+// サーバーから返ってきた履歴1件を、画面下の履歴リストの先頭に追加する
+// （練習完了直後、リスト全体を再取得しなくても即座に反映するため）
 function addHistoryItem(entry) {
   const list  = document.getElementById('historyList');
   const empty = list.querySelector('.history-empty');
@@ -487,6 +674,7 @@ function addHistoryItem(entry) {
   list.prepend(li);
 }
 
+// 選択中のプロフィールの練習履歴をサーバーから取得し、履歴リスト全体を描画し直す
 async function renderHistory() {
   const history = await getHistory(currentProfileId);
   const list = document.getElementById('historyList');
@@ -501,18 +689,23 @@ async function renderHistory() {
 }
 
 // ===========================
-// グラフ描画
+// グラフ描画（統計タブ、Chart.js を使用）
 // ===========================
-const charts = { accuracy: null, daily: null, scale: null };
+const charts = { accuracy: null, daily: null, scale: null, notes: null, strings: null }; // 描画済みのChartインスタンスを保持（再描画時に破棄するため）
 
+// 統計データをサーバーから取得し、「正答率の推移」「日別練習回数」「調ごとの正答率」
+// 「苦手な音」「弦ごとの正答率」の5つのグラフを描画する（統計タブを開いたときに1回だけ呼ばれる）
 async function renderStats() {
-  const data   = await getStats(currentProfileId);
-  const daily  = [...data.daily].reverse();
-  const scales = data.by_scale;
+  const data     = await getStats(currentProfileId);
+  const noteData = await getNoteStats(currentProfileId);
+  const daily    = [...data.daily].reverse();
+  const scales   = data.by_scale;
 
   charts.accuracy?.destroy();
   charts.daily?.destroy();
   charts.scale?.destroy();
+  charts.notes?.destroy();
+  charts.strings?.destroy();
 
   // 正答率の推移
   const accCtx = document.getElementById('chartAccuracy').getContext('2d');
@@ -547,7 +740,7 @@ async function renderStats() {
     options: chartOptions('回数', undefined, undefined, true)
   });
 
-  // 調ごとの正答率
+  // 調ごとの正答率（テンポモードのみ。理由はサーバー側のコメント参照）
   const scaleCtx = document.getElementById('chartScale').getContext('2d');
   charts.scale = new Chart(scaleCtx, {
     type: 'bar',
@@ -562,8 +755,52 @@ async function renderStats() {
     },
     options: chartOptions('正答率 (%)', 0, 100)
   });
+  document.getElementById('chartScaleNote').style.display = scales.length > 0 ? 'block' : 'none';
+
+  // 苦手な音（正答率が低い順。データが少ない音は対象外）
+  const notes = noteData.by_note;
+  document.getElementById('chartNotes').style.display      = notes.length > 0 ? 'block' : 'none';
+  document.getElementById('chartNotesEmpty').style.display = notes.length > 0 ? 'none'  : 'block';
+  if (notes.length > 0) {
+    const notesCtx = document.getElementById('chartNotes').getContext('2d');
+    charts.notes = new Chart(notesCtx, {
+      type: 'bar',
+      data: {
+        labels: notes.map(n => n.note),
+        datasets: [{
+          label: '正答率 (%)',
+          data: notes.map(n => n.accuracy),
+          backgroundColor: 'rgba(214,137,16,0.75)',
+          borderRadius: 6
+        }]
+      },
+      options: chartOptions('正答率 (%)', 0, 100)
+    });
+  }
+
+  // 弦ごとの正答率
+  const strings = noteData.by_string;
+  document.getElementById('chartStrings').style.display      = strings.length > 0 ? 'block' : 'none';
+  document.getElementById('chartStringsEmpty').style.display = strings.length > 0 ? 'none'  : 'block';
+  if (strings.length > 0) {
+    const stringsCtx = document.getElementById('chartStrings').getContext('2d');
+    charts.strings = new Chart(stringsCtx, {
+      type: 'bar',
+      data: {
+        labels: strings.map(s => s.string),
+        datasets: [{
+          label: '正答率 (%)',
+          data: strings.map(s => s.accuracy),
+          backgroundColor: 'rgba(127,166,104,0.75)',
+          borderRadius: 6
+        }]
+      },
+      options: chartOptions('正答率 (%)', 0, 100)
+    });
+  }
 }
 
+// 3つのグラフ共通の見た目設定（色・軸ラベル・最小最大値など）をまとめて生成する
 function chartOptions(yLabel, min, max, integer = false) {
   return {
     responsive: true,
@@ -581,9 +818,9 @@ function chartOptions(yLabel, min, max, integer = false) {
 }
 
 // ===========================
-// タブ切り替え
+// タブ切り替え（「練習」タブと「統計」タブ）
 // ===========================
-let statsLoaded = false;
+let statsLoaded = false; // 統計タブを一度でも開いたか（毎回グラフを再取得しないようにするフラグ）
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -601,14 +838,17 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 // ===========================
-// イベント
+// イベント（設定画面のUI部品にリスナーを登録する）
 // ===========================
+// カテゴリーを変更したら、調セレクトの中身を作り直す
 document.getElementById('categorySelect').addEventListener('change', populateScaleSelect);
 
+// 調を選んだら「開始」ボタンを押せるようにする（未選択なら押せない）
 document.getElementById('scaleSelect').addEventListener('change', (e) => {
   document.getElementById('startBtn').disabled = e.target.value === '';
 });
 
+// 「1音ずつ」/「テンポ」モードの切り替えで、BPM設定欄の表示・非表示を切り替える
 document.querySelectorAll('input[name="mode"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
     document.getElementById('bpmGroup').style.display =
@@ -616,6 +856,7 @@ document.querySelectorAll('input[name="mode"]').forEach(radio => {
   });
 });
 
+// BPMスライダーを動かしたら、隣に表示している数値も更新する
 document.getElementById('bpmRange').addEventListener('input', (e) => {
   document.getElementById('bpmValue').textContent = e.target.value;
 });
@@ -623,6 +864,7 @@ document.getElementById('bpmRange').addEventListener('input', (e) => {
 document.getElementById('startBtn').addEventListener('click', startPractice);
 document.getElementById('stopBtn').addEventListener('click', stopPractice);
 
+// 練習中の表示を「音符トラック」「指板」で切り替えるボタン
 document.querySelectorAll('.view-toggle-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.remove('active'));
@@ -633,12 +875,17 @@ document.querySelectorAll('.view-toggle-btn').forEach(btn => {
   });
 });
 
+// 完了画面の「もう一度」ボタンで設定画面に戻る
 document.getElementById('retryBtn').addEventListener('click', () => {
   statsLoaded = false;
   document.getElementById('setupCard').style.display   = 'block';
   document.getElementById('completeCard').style.display = 'none';
 });
 
+// 完了画面の「もう一回練習」ボタンで、設定画面に戻らず同じ設定のまま練習をやり直す
+document.getElementById('retryPracticeBtn').addEventListener('click', startPractice);
+
+// 確認ダイアログを出したうえで、現在のプロフィールの履歴を全件削除する
 async function clearAllHistory() {
   if (!confirm('履歴を全件削除しますか？')) return;
   await clearHistory(currentProfileId);
@@ -650,10 +897,11 @@ async function clearAllHistory() {
 document.getElementById('clearStatsBtn').addEventListener('click', clearAllHistory);
 
 // ===========================
-// プロフィール管理
+// プロフィール管理（複数人・複数アカウントで練習履歴を分けて使うための機能）
 // ===========================
-const PROFILE_STORAGE_KEY = 'violinapp_profile_id';
+const PROFILE_STORAGE_KEY = 'violinapp_profile_id'; // 選択中プロフィールIDをブラウザに覚えさせるキー
 
+// プロフィールセレクトボックスの中身を作り直す
 function renderProfileSelect(profiles) {
   const select = document.getElementById('profileSelect');
   select.innerHTML = profiles.map(p =>
@@ -661,6 +909,8 @@ function renderProfileSelect(profiles) {
   ).join('');
 }
 
+// ページ読み込み時に、プロフィール一覧を取得し、前回選んでいたプロフィール
+// （localStorageに保存済み）があればそれを、なければ先頭のプロフィールを選択状態にする
 async function initProfiles() {
   const profiles = await getProfiles();
   const saved = parseInt(localStorage.getItem(PROFILE_STORAGE_KEY), 10);
@@ -670,6 +920,7 @@ async function initProfiles() {
   await renderHistory();
 }
 
+// 別のプロフィールに切り替えたら、選択を記憶して履歴・統計を読み込み直す
 document.getElementById('profileSelect').addEventListener('change', async (e) => {
   currentProfileId = parseInt(e.target.value, 10);
   localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
@@ -677,6 +928,7 @@ document.getElementById('profileSelect').addEventListener('change', async (e) =>
   if (statsLoaded) await renderStats();
 });
 
+// 新しいプロフィールを作成し、それを選択状態にする
 document.getElementById('addProfileBtn').addEventListener('click', async () => {
   const name = prompt('新しいプロフィール名を入力してください');
   if (!name || !name.trim()) return;
@@ -692,6 +944,7 @@ document.getElementById('addProfileBtn').addEventListener('click', async () => {
   }
 });
 
+// 現在のプロフィールを（履歴ごと）削除する。最後の1件は削除させない
 document.getElementById('deleteProfileBtn').addEventListener('click', async () => {
   const profiles = await getProfiles();
   if (profiles.length <= 1) {
@@ -714,11 +967,11 @@ document.getElementById('deleteProfileBtn').addEventListener('click', async () =
 });
 
 // ===========================
-// 初期化
+// 初期化（ファイル読み込み時に実行される）
 // ===========================
-loadScales();
-initProfiles();
-renderFingerboardTicks();
+loadScales();            // 音階データを取得してセレクトボックス等を用意する
+initProfiles();           // プロフィール一覧を取得して履歴を表示する
+renderFingerboardTicks(); // 指板の目安線を描画する
 
 
 //442hz

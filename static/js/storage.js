@@ -43,3 +43,8 @@ async function getStats(profileId) {
   const res = await fetch(`/api/stats?profile_id=${profileId}`);
   return await res.json();
 }
+
+async function getNoteStats(profileId) {
+  const res = await fetch(`/api/stats/notes?profile_id=${profileId}`);
+  return await res.json();
+}
