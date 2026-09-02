@@ -41,6 +41,7 @@ header .subtitle { font-size: 0.9rem; color: var(--text-secondary); margin-top: 
 
 .profile-bar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   align-items: center;
   gap: 8px;
@@ -68,6 +69,56 @@ header .subtitle { font-size: 0.9rem; color: var(--text-secondary); margin-top: 
   flex-shrink: 0;
 }
 .btn-icon:hover { color: var(--gold-bright); }
+
+.btn-logout {
+  width: auto;
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  border-radius: 20px;
+  border: 1px solid var(--burgundy-bright);
+  background: transparent;
+  color: var(--burgundy-bright);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.btn-logout:hover { background: var(--burgundy); color: var(--text-primary); }
+
+.profile-name { font-size: 0.95rem; color: var(--text-primary); font-weight: bold; white-space: nowrap; }
+.role-badge {
+  font-size: 0.7rem; font-weight: bold; color: var(--bg-deep);
+  background: var(--gold); border-radius: 20px; padding: 2px 10px;
+}
+
+/* ===== ログイン画面 ===== */
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card { width: 100%; max-width: 380px; }
+.login-title {
+  font-family: Georgia, 'Hiragino Mincho ProN', serif;
+  font-size: 1.6rem;
+  color: var(--gold-bright);
+  text-align: center;
+  margin-bottom: 20px;
+}
+.login-note { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.6; }
+.login-note-center { text-align: center; margin: 8px 0 0; }
+.login-error { color: var(--danger); font-size: 0.9rem; text-align: center; margin: -6px 0 10px; }
+
+input[type="text"], input[type="password"] {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
 
 main {
   max-width: 600px;
@@ -120,6 +171,47 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-secondary{ background: var(--bg-input); color: var(--text-primary); }
 .btn-danger   { background: var(--burgundy); color: var(--text-primary); margin-top: 12px; }
 .btn-sm       { width: auto; font-size: 0.85rem; padding: 8px 16px; margin: 16px auto 0; display: block; }
+
+/* ===== 電子メトロノーム風のビートライト（テンポモードでテンポを視覚的に分かりやすくする） =====
+   丸を5つ並べた「振り子」の軌道に見立て、実際に拍が来るのは両端の丸だけ。
+   真ん中の3つは軌道の目印として置いておくだけで光らない。 */
+.metronome-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 220px;
+  max-width: 100%;
+  margin: 0 auto 12px;
+}
+
+.metronome-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--bg-input);
+  border: 2px solid var(--border-soft);
+  transition: background 0.12s ease-out, border-color 0.12s ease-out,
+              box-shadow 0.12s ease-out, transform 0.12s ease-out;
+}
+
+/* 拍が実際に来る両端の丸は、少し大きめにして目立たせておく */
+.metronome-dot:first-child,
+.metronome-dot:last-child {
+  width: 18px; height: 18px;
+  border-color: var(--text-secondary);
+}
+
+.metronome-dot.active {
+  background: var(--gold-bright);
+  border-color: var(--gold-bright);
+  box-shadow: 0 0 12px 3px rgba(232,196,104,0.7);
+  transform: scale(1.25);
+}
+
+.metronome-dot.accent.active {
+  background: var(--burgundy-bright);
+  border-color: var(--burgundy-bright);
+  box-shadow: 0 0 14px 4px rgba(179,80,90,0.8);
+}
 
 /* ===== 音符が流れる譜面風トラック（常に5個表示・中央が今弾く音） ===== */
 .note-staff {

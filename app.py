@@ -1,20 +1,40 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 import sqlite3
 import os
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), 'database', 'history.db')
+SECRET_KEY_PATH = os.path.join(os.path.dirname(__file__), 'database', 'secret.key')
 DEFAULT_PROFILE_NAME = 'デフォルト'
+
+# ===== セッション用の秘密鍵（初回起動時に生成してファイルに保存し、以後使い回す） =====
+def load_secret_key():
+    if os.path.exists(SECRET_KEY_PATH):
+        with open(SECRET_KEY_PATH, 'r') as f:
+            return f.read().strip()
+    os.makedirs(os.path.dirname(SECRET_KEY_PATH), exist_ok=True)
+    key = secrets.token_hex(32)
+    with open(SECRET_KEY_PATH, 'w') as f:
+        f.write(key)
+    return key
+
+app.secret_key = load_secret_key()
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 
 # ===== DB初期化 =====
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS profiles (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT    NOT NULL UNIQUE,
-                created_at TEXT    NOT NULL
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT    NOT NULL UNIQUE,
+                created_at    TEXT    NOT NULL,
+                password_hash TEXT,
+                role          TEXT    NOT NULL DEFAULT 'user'
             )
         ''')
 
@@ -58,52 +78,203 @@ def init_db():
             if col not in existing_cols:
                 conn.execute(ddl)
 
-        # プロフィールが1件もなければ、デフォルトプロフィール（id=1）を作成
+        # 旧スキーマ（password_hash/roleがない）のprofilesを移行。
+        # role列がまだ無かった＝ログイン機能導入前のDBという印なので、
+        # 移行直後に一番古いプロフィールを管理者に昇格させる
+        # （導入前からの利用者が、機能追加後も自分のデータに管理者権限でアクセスできるようにするため）
+        existing_profile_cols = {row[1] for row in conn.execute('PRAGMA table_info(profiles)')}
+        upgrading_from_no_auth = 'role' not in existing_profile_cols
+        profile_migrations = {
+            'password_hash': "ALTER TABLE profiles ADD COLUMN password_hash TEXT",
+            'role':          "ALTER TABLE profiles ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+        }
+        for col, ddl in profile_migrations.items():
+            if col not in existing_profile_cols:
+                conn.execute(ddl)
+
+        if upgrading_from_no_auth:
+            first_id = conn.execute('SELECT MIN(id) FROM profiles').fetchone()[0]
+            if first_id is not None:
+                conn.execute('UPDATE profiles SET role = ? WHERE id = ?', ('admin', first_id))
+
+        # プロフィールが1件もなければ、デフォルトプロフィール（管理者）を作成
         if conn.execute('SELECT COUNT(*) FROM profiles').fetchone()[0] == 0:
             conn.execute(
-                'INSERT INTO profiles (name, created_at) VALUES (?, ?)',
-                (DEFAULT_PROFILE_NAME, datetime.now().strftime('%Y/%m/%d %H:%M'))
+                'INSERT INTO profiles (name, created_at, role) VALUES (?, ?, ?)',
+                (DEFAULT_PROFILE_NAME, datetime.now().strftime('%Y/%m/%d %H:%M'), 'admin')
             )
 
         conn.commit()
+
+# ===== 認証まわりのヘルパー =====
+def login_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if 'profile_id' not in session:
+            return jsonify({'error': 'ログインが必要です'}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+# 自分のデータか、管理者かどうかを判定する
+# （管理者は他人のデータを閲覧できるが、practicing/書き込みは常に自分のアカウントに対してのみ行う）
+def can_access_profile(profile_id):
+    return session.get('role') == 'admin' or session.get('profile_id') == profile_id
 
 # ===== ページ =====
 @app.route('/')
 def home():
     return render_template('index.html')
 
-# ===== プロフィール一覧 =====
+# ===== ログイン =====
+@app.route('/api/login', methods=['POST'])
+def login():
+    data     = request.get_json() or {}
+    name     = (data.get('name') or '').strip()
+    password = data.get('password') or ''
+    if not name or not password:
+        return jsonify({'error': '名前とパスワードを入力してください'}), 400
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profile = conn.execute('SELECT * FROM profiles WHERE name = ?', (name,)).fetchone()
+
+    if profile is None:
+        return jsonify({'error': 'その名前のアカウントは見つかりません'}), 401
+
+    # ログイン機能導入前から存在するアカウントはまだパスワードが無いので、
+    # 初回パスワード設定へ誘導する
+    if profile['password_hash'] is None:
+        return jsonify({'needs_setup': True, 'name': profile['name']}), 200
+
+    if not check_password_hash(profile['password_hash'], password):
+        return jsonify({'error': 'パスワードが違います'}), 401
+
+    session.clear()
+    session.permanent = True
+    session['profile_id'] = profile['id']
+    session['role']       = profile['role']
+    return jsonify({'id': profile['id'], 'name': profile['name'], 'role': profile['role']}), 200
+
+# ===== 初回パスワード設定（password_hashがまだ無いアカウント専用） =====
+@app.route('/api/set-password', methods=['POST'])
+def set_password():
+    data     = request.get_json() or {}
+    name     = (data.get('name') or '').strip()
+    password = data.get('password') or ''
+    if not name or len(password) < 4:
+        return jsonify({'error': 'パスワードは4文字以上で入力してください'}), 400
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profile = conn.execute('SELECT * FROM profiles WHERE name = ?', (name,)).fetchone()
+        if profile is None:
+            return jsonify({'error': 'その名前のアカウントは見つかりません'}), 404
+        if profile['password_hash'] is not None:
+            return jsonify({'error': 'すでにパスワードが設定されています。ログインしてください'}), 409
+
+        conn.execute('UPDATE profiles SET password_hash = ? WHERE id = ?',
+                     (generate_password_hash(password), profile['id']))
+        conn.commit()
+
+    session.clear()
+    session.permanent = True
+    session['profile_id'] = profile['id']
+    session['role']       = profile['role']
+    return jsonify({'id': profile['id'], 'name': profile['name'], 'role': profile['role']}), 200
+
+# ===== ログアウト =====
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'message': 'logged out'}), 200
+
+# ===== 現在ログイン中のアカウント情報 =====
+@app.route('/api/me', methods=['GET'])
+def me():
+    if 'profile_id' not in session:
+        return jsonify({'error': 'not logged in'}), 401
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profile = conn.execute(
+            'SELECT id, name, role FROM profiles WHERE id = ?', (session['profile_id'],)
+        ).fetchone()
+    if profile is None:
+        session.clear()
+        return jsonify({'error': 'not logged in'}), 401
+    return jsonify(dict(profile)), 200
+
+# ===== パスワード変更（本人のみ） =====
+@app.route('/api/change-password', methods=['POST'])
+@login_required
+def change_password():
+    data    = request.get_json() or {}
+    current = data.get('current_password') or ''
+    new     = data.get('new_password') or ''
+    if len(new) < 4:
+        return jsonify({'error': '新しいパスワードは4文字以上で入力してください'}), 400
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profile = conn.execute('SELECT * FROM profiles WHERE id = ?', (session['profile_id'],)).fetchone()
+        if not check_password_hash(profile['password_hash'], current):
+            return jsonify({'error': '現在のパスワードが違います'}), 401
+        conn.execute('UPDATE profiles SET password_hash = ? WHERE id = ?',
+                     (generate_password_hash(new), profile['id']))
+        conn.commit()
+
+    return jsonify({'message': 'updated'}), 200
+
+# ===== プロフィール（アカウント）一覧 =====
+# 管理者は全員分、一般ユーザーは自分の分だけを返す
 @app.route('/api/profiles', methods=['GET'])
+@login_required
 def get_profiles():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute('SELECT * FROM profiles ORDER BY id').fetchall()
+        if session.get('role') == 'admin':
+            rows = conn.execute('SELECT id, name, role, created_at FROM profiles ORDER BY id').fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT id, name, role, created_at FROM profiles WHERE id = ?', (session['profile_id'],)
+            ).fetchall()
     return jsonify([dict(row) for row in rows])
 
-# ===== プロフィール作成 =====
+# ===== アカウント新規作成（誰でも作成可。作成すると同時にログイン状態になる） =====
 @app.route('/api/profiles', methods=['POST'])
 def create_profile():
-    name = (request.get_json() or {}).get('name', '').strip()
+    data     = request.get_json() or {}
+    name     = (data.get('name') or '').strip()
+    password = data.get('password') or ''
     if not name:
         return jsonify({'error': '名前を入力してください'}), 400
+    if len(password) < 4:
+        return jsonify({'error': 'パスワードは4文字以上で入力してください'}), 400
 
     created_at = datetime.now().strftime('%Y/%m/%d %H:%M')
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.execute(
-                'INSERT INTO profiles (name, created_at) VALUES (?, ?)',
-                (name, created_at)
+                'INSERT INTO profiles (name, created_at, password_hash, role) VALUES (?, ?, ?, ?)',
+                (name, created_at, generate_password_hash(password), 'user')
             )
             conn.commit()
             profile_id = cur.lastrowid
     except sqlite3.IntegrityError:
         return jsonify({'error': 'その名前は既に使われています'}), 409
 
-    return jsonify({'id': profile_id, 'name': name, 'created_at': created_at}), 201
+    session.clear()
+    session.permanent = True
+    session['profile_id'] = profile_id
+    session['role']       = 'user'
+    return jsonify({'id': profile_id, 'name': name, 'role': 'user', 'created_at': created_at}), 201
 
-# ===== プロフィール削除 =====
+# ===== アカウント削除（本人か管理者のみ） =====
 @app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
+@login_required
 def delete_profile(profile_id):
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
+
     with sqlite3.connect(DB_PATH) as conn:
         count = conn.execute('SELECT COUNT(*) FROM profiles').fetchone()[0]
         if count <= 1:
@@ -117,12 +288,19 @@ def delete_profile(profile_id):
         conn.execute('DELETE FROM profiles WHERE id = ?', (profile_id,))
         conn.commit()
 
+    if session.get('profile_id') == profile_id:
+        session.clear()
+
     return jsonify({'message': 'deleted'}), 200
 
 # ===== 履歴を取得 =====
 @app.route('/api/history', methods=['GET'])
+@login_required
 def get_history():
-    profile_id = request.args.get('profile_id', type=int, default=1)
+    profile_id = request.args.get('profile_id', type=int, default=session['profile_id'])
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
+
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -133,18 +311,19 @@ def get_history():
 
 # ===== 履歴を保存 =====
 @app.route('/api/history', methods=['POST'])
+@login_required
 def save_history():
-    data         = request.get_json()
-    profile_id   = data.get('profile_id', 1)
-    scale        = data.get('scale')
-    direction    = data.get('direction')
-    mode         = data.get('mode', 'step')
-    bpm          = data.get('bpm')
-    notes_correct= data.get('notes_correct', 0)
-    notes_total  = data.get('notes_total', 0)
-    note_results = data.get('note_results') or []
-    accuracy     = round(notes_correct / notes_total * 100, 1) if notes_total > 0 else 0.0
-    practiced_at = datetime.now().strftime('%Y/%m/%d %H:%M')
+    data          = request.get_json()
+    profile_id    = session['profile_id']  # 他人になりすまして記録できないよう、常に自分のアカウントに保存する
+    scale         = data.get('scale')
+    direction     = data.get('direction')
+    mode          = data.get('mode', 'step')
+    bpm           = data.get('bpm')
+    notes_correct = data.get('notes_correct', 0)
+    notes_total   = data.get('notes_total', 0)
+    note_results  = data.get('note_results') or []
+    accuracy      = round(notes_correct / notes_total * 100, 1) if notes_total > 0 else 0.0
+    practiced_at  = datetime.now().strftime('%Y/%m/%d %H:%M')
 
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute('''
@@ -172,12 +351,13 @@ def save_history():
         'time': practiced_at
     }), 201
 
-# ===== 履歴を全件削除（プロフィール単位） =====
+# ===== 履歴を全件削除（プロフィール単位。本人か管理者のみ） =====
 @app.route('/api/history', methods=['DELETE'])
+@login_required
 def clear_history():
-    profile_id = request.args.get('profile_id', type=int)
-    if profile_id is None:
-        return jsonify({'error': 'profile_id is required'}), 400
+    profile_id = request.args.get('profile_id', type=int, default=session['profile_id'])
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
 
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('''
@@ -190,8 +370,12 @@ def clear_history():
 
 # ===== グラフ用統計データ =====
 @app.route('/api/stats', methods=['GET'])
+@login_required
 def get_stats():
-    profile_id = request.args.get('profile_id', type=int, default=1)
+    profile_id = request.args.get('profile_id', type=int, default=session['profile_id'])
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
+
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
 
@@ -229,8 +413,12 @@ def get_stats():
 
 # ===== 音ごとの苦手分析 =====
 @app.route('/api/stats/notes', methods=['GET'])
+@login_required
 def get_note_stats():
-    profile_id = request.args.get('profile_id', type=int, default=1)
+    profile_id = request.args.get('profile_id', type=int, default=session['profile_id'])
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
+
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
 

@@ -182,6 +182,7 @@ function startTempoMode() {
   const interval = (60 / bpm) * 1000;
   let beat       = 0;
   let countdown  = 3;
+  let pendulumLeft = true; // ビートライトの振り子：次の拍は左端か右端か
 
   // 指板・音符トラックに最初の音をすぐ反映する（前回の練習の表示が
   // カウントダウン中に一瞬見えてしまうのを防ぐ）
@@ -189,6 +190,9 @@ function startTempoMode() {
 
   const countdownEl = document.getElementById('countdown');
   countdownEl.style.display = 'block';
+
+  // 電子メトロノームのようにテンポを目で見て分かりやすくするビートライトを表示する
+  document.getElementById('metronomeBar').style.display = 'flex';
 
   // マイク起動（常時聴いておく）
   detector.start((freq) => {
@@ -201,12 +205,14 @@ function startTempoMode() {
   // 1拍分後にクリック音を鳴らしていたため、表示と音が1拍分ずれて聞こえていた。
   countdownEl.textContent = countdown;
   playClick(true); // 「3」の合図
+  flashMetronome(null); // カウントダウン中は5つ全部を光らせる
 
   countTimer = setInterval(() => {
     countdown--;
     if (countdown > 0) {
       countdownEl.textContent = countdown;
       playClick(true); // 強拍
+      flashMetronome(null);
     } else {
       clearInterval(countTimer);
       countTimer = null;
@@ -214,6 +220,8 @@ function startTempoMode() {
       isPracticing = true;
       showCurrentNote();
       playClick(true); // 4拍目 = スタートの合図
+      flashMetronome(pendulumLeft, true); // 1拍目（強拍）は左端から
+      scheduleMetronomeSweep(pendulumLeft, interval); // 次の拍まで、真ん中3つを通り道として光が通過していく
 
       // メトロノーム開始
       tempoInterval = setInterval(() => {
@@ -229,10 +237,62 @@ function startTempoMode() {
 
         // evaluateBeat()が出した直前の音の判定(✅/❌)は消さずに残す
         showCurrentNote(false);
-        playClick(beat % 4 === 0);
+        const isAccent = beat % 4 === 0;
+        playClick(isAccent);
+        pendulumLeft = !pendulumLeft; // 振り子のように毎拍、左端⇔右端を切り替える
+        flashMetronome(pendulumLeft, isAccent);
+        scheduleMetronomeSweep(pendulumLeft, interval);
       }, interval);
     }
   }, interval);
+}
+
+// 電子メトロノームのビートライトを1拍分光らせる。
+// 振り子のように、拍のたびに左端(true)か右端(false)の丸だけが光る（真ん中3つは軌道の目印で光らない）。
+// leftOrNull=nullはカウントダウン中で、5つ全部を光らせる。
+function flashMetronome(leftOrNull, accent = false) {
+  const dots = document.querySelectorAll('.metronome-dot');
+  if (dots.length === 0) return;
+
+  const targets = leftOrNull == null ? Array.from(dots) : [leftOrNull ? dots[0] : dots[dots.length - 1]];
+  targets.forEach(dot => {
+    dot.classList.add('active');
+    dot.classList.toggle('accent', !!accent);
+    clearTimeout(dot._metronomeTimer);
+    dot._metronomeTimer = setTimeout(() => dot.classList.remove('active', 'accent'), 150);
+  });
+}
+
+// ビートライトの真ん中3つを「通り道」として、拍から次の拍までの間に
+// 光がそこを通過していくように、durationMs（拍の間隔）を4等分したタイミングで
+// 順番に短く光らせる（左端から光ったなら次は右へ、右端からなら次は左へ）。
+let sweepTimers = []; // 予約したタイマーIDをまとめて持っておき、中断時に解除できるようにする
+
+function scheduleMetronomeSweep(startedFromLeft, durationMs) {
+  const dots = document.querySelectorAll('.metronome-dot');
+  if (dots.length < 5) return;
+
+  const order = startedFromLeft ? [1, 2, 3] : [3, 2, 1];
+  order.forEach((dotIndex, i) => {
+    const delay = durationMs * (i + 1) / 4;
+    const timerId = setTimeout(() => {
+      const dot = dots[dotIndex];
+      dot.classList.add('active');
+      clearTimeout(dot._metronomeTimer);
+      dot._metronomeTimer = setTimeout(() => dot.classList.remove('active'), Math.min(120, durationMs / 4));
+    }, delay);
+    sweepTimers.push(timerId);
+  });
+}
+
+// ビートライトの点灯・予約中の通過演出をすべて止めて消灯する（練習の中断・完了時に呼ぶ）
+function clearMetronomeVisual() {
+  sweepTimers.forEach(id => clearTimeout(id));
+  sweepTimers = [];
+  document.querySelectorAll('.metronome-dot').forEach(dot => {
+    clearTimeout(dot._metronomeTimer);
+    dot.classList.remove('active', 'accent');
+  });
 }
 
 // テンポモードで、直前の拍の間にマイクが拾えていた周波数(detectedFreqNow)を
@@ -577,6 +637,8 @@ async function completePractice() {
   detector.stop();
   isPracticing = false;
   if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
+  clearMetronomeVisual();
+  document.getElementById('metronomeBar').style.display = 'none';
 
   const scaleKey  = document.getElementById('scaleSelect').value;
   const direction = document.querySelector('input[name="direction"]:checked').value;
@@ -589,12 +651,17 @@ async function completePractice() {
   const accuracy = practiceNotes.length > 0
     ? Math.round(notesCorrect / practiceNotes.length * 100) : 0;
 
-  const entry = await saveHistory({
-    scale: scaleKey, direction: dirLabel, mode,
-    bpm, notes_correct: notesCorrect, notes_total: practiceNotes.length,
-    profile_id: currentProfileId, note_results: practiceResults
-  });
-  addHistoryItem(entry);
+  // ゲストモードでは記録を一切保存しない（ログインしていないので保存先のアカウントが無い）
+  if (!isGuest) {
+    // profile_idは送らない。誰の記録として保存するかはサーバー側で
+    // ログイン中の本人アカウントに固定しているため（他人になりすまして記録できないように）
+    const entry = await saveHistory({
+      scale: scaleKey, direction: dirLabel, mode,
+      bpm, notes_correct: notesCorrect, notes_total: practiceNotes.length,
+      note_results: practiceResults
+    });
+    addHistoryItem(entry);
+  }
 
   document.getElementById('practiceCard').style.display  = 'none';
   document.getElementById('completeCard').style.display  = 'block';
@@ -656,10 +723,12 @@ function stopPractice() {
   isPracticing = false;
   if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
   if (countTimer)    { clearInterval(countTimer);    countTimer = null; }
+  clearMetronomeVisual();
   document.getElementById('setupCard').style.display    = 'block';
   document.getElementById('practiceCard').style.display = 'none';
   document.getElementById('completeCard').style.display = 'none';
   document.getElementById('countdown').style.display    = 'none';
+  document.getElementById('metronomeBar').style.display = 'none';
 }
 
 // サーバーから返ってきた履歴1件を、画面下の履歴リストの先頭に追加する
@@ -897,70 +966,216 @@ async function clearAllHistory() {
 document.getElementById('clearStatsBtn').addEventListener('click', clearAllHistory);
 
 // ===========================
-// プロフィール管理（複数人・複数アカウントで練習履歴を分けて使うための機能）
+// 認証（ログイン・新規登録・ログアウト）
 // ===========================
-const PROFILE_STORAGE_KEY = 'violinapp_profile_id'; // 選択中プロフィールIDをブラウザに覚えさせるキー
+let currentUser = null; // { id, name, role } ログイン中のアカウント
+let isGuest     = false; // アカウントを作らず「ゲスト」として練習しているか（記録は一切保存しない）
 
-// プロフィールセレクトボックスの中身を作り直す
-function renderProfileSelect(profiles) {
-  const select = document.getElementById('profileSelect');
-  select.innerHTML = profiles.map(p =>
-    `<option value="${p.id}" ${p.id === currentProfileId ? 'selected' : ''}>${p.name}</option>`
-  ).join('');
+function showLoginScreen() {
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('appRoot').style.display = 'none';
 }
 
-// ページ読み込み時に、プロフィール一覧を取得し、前回選んでいたプロフィール
-// （localStorageに保存済み）があればそれを、なければ先頭のプロフィールを選択状態にする
-async function initProfiles() {
-  const profiles = await getProfiles();
-  const saved = parseInt(localStorage.getItem(PROFILE_STORAGE_KEY), 10);
-  const match = profiles.find(p => p.id === saved);
-  currentProfileId = match ? match.id : profiles[0].id;
-  renderProfileSelect(profiles);
+function showApp() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appRoot').style.display = 'block';
+}
+
+function showLoginError(id, message) {
+  const el = document.getElementById(id);
+  el.textContent = message;
+  el.style.display = 'block';
+}
+function hideLoginErrors() {
+  ['loginError', 'signupError', 'setupPasswordError', 'changePasswordError'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+}
+
+// ログインフォーム／新規登録フォーム／初回パスワード設定フォームの切り替え
+function showLoginSubForm(which) {
+  hideLoginErrors();
+  document.getElementById('loginForm').style.display         = which === 'login'  ? 'block' : 'none';
+  document.getElementById('signupForm').style.display        = which === 'signup' ? 'block' : 'none';
+  document.getElementById('setupPasswordForm').style.display = which === 'setup'  ? 'block' : 'none';
+}
+
+document.getElementById('showSignupBtn').addEventListener('click', () => showLoginSubForm('signup'));
+document.getElementById('backToLoginBtn').addEventListener('click', () => showLoginSubForm('login'));
+document.getElementById('setupPasswordBackBtn').addEventListener('click', () => showLoginSubForm('login'));
+
+document.getElementById('loginBtn').addEventListener('click', async () => {
+  hideLoginErrors();
+  const name     = document.getElementById('loginName').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  if (!name || !password) { showLoginError('loginError', '名前とパスワードを入力してください'); return; }
+  try {
+    const result = await login(name, password);
+    if (result.needs_setup) {
+      document.getElementById('setupPasswordName').textContent = result.name;
+      document.getElementById('setupPassword').value = '';
+      showLoginSubForm('setup');
+      return;
+    }
+    currentUser = result;
+    await onLoggedIn();
+  } catch (err) {
+    showLoginError('loginError', err.message);
+  }
+});
+
+document.getElementById('setupPasswordBtn').addEventListener('click', async () => {
+  hideLoginErrors();
+  const name     = document.getElementById('setupPasswordName').textContent;
+  const password = document.getElementById('setupPassword').value;
+  try {
+    currentUser = await setPassword(name, password);
+    await onLoggedIn();
+  } catch (err) {
+    showLoginError('setupPasswordError', err.message);
+  }
+});
+
+document.getElementById('signupBtn').addEventListener('click', async () => {
+  hideLoginErrors();
+  const name     = document.getElementById('signupName').value.trim();
+  const password = document.getElementById('signupPassword').value;
+  if (!name) { showLoginError('signupError', '名前を入力してください'); return; }
+  try {
+    currentUser = await createProfile(name, password);
+    await onLoggedIn();
+  } catch (err) {
+    showLoginError('signupError', err.message);
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  if (!isGuest) await logout(); // ゲストはサーバー側にセッションが無いのでログアウトAPIは呼ばない
+  currentUser = null;
+  currentProfileId = null;
+  isGuest = false;
+  document.getElementById('loginName').value = '';
+  document.getElementById('loginPassword').value = '';
+  showLoginSubForm('login');
+  showLoginScreen();
+});
+
+// ログイン成功直後の共通処理：アプリ本体を表示し、必要なデータを読み込む
+async function onLoggedIn() {
+  isGuest = false;
+  resetGuestUI();
+  currentProfileId = currentUser.id;
+  showApp();
+  renderAccountBar();
+  await loadScales();
+  await initProfileViewer();
   await renderHistory();
+  statsLoaded = false;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'practice'));
+  document.getElementById('tab-practice').style.display = 'block';
+  document.getElementById('tab-stats').style.display    = 'none';
+  renderFingerboardTicks();
 }
 
-// 別のプロフィールに切り替えたら、選択を記憶して履歴・統計を読み込み直す
-document.getElementById('profileSelect').addEventListener('change', async (e) => {
+// ヘッダーに、ログイン中の名前・管理者バッジを表示する
+function renderAccountBar() {
+  document.getElementById('profileName').textContent = currentUser.name;
+  document.getElementById('roleBadge').textContent    = '管理者';
+  document.getElementById('roleBadge').style.display  = currentUser.role === 'admin' ? 'inline-block' : 'none';
+}
+
+// ===========================
+// ゲストモード（アカウントを作らずに練習だけ行う。記録は一切保存しない）
+// ===========================
+document.getElementById('guestBtn').addEventListener('click', async () => {
+  isGuest = true;
+  currentUser = null;
+  currentProfileId = null;
+
+  showApp();
+  document.getElementById('profileName').textContent = '';
+  document.getElementById('roleBadge').textContent   = 'ゲスト';
+  document.getElementById('roleBadge').style.display = 'inline-block';
+  document.getElementById('adminViewSelect').style.display = 'none';
+  document.getElementById('logoutBtn').textContent = '🚪 ログイン画面に戻る';
+  document.getElementById('logoutBtn').title = 'ログイン画面に戻る';
+  document.getElementById('statsTabBtn').style.display  = 'none';
+  document.getElementById('historySection').style.display = 'none';
+  document.getElementById('guestNote').style.display = 'block';
+
+  await loadScales();
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'practice'));
+  document.getElementById('tab-practice').style.display = 'block';
+  document.getElementById('tab-stats').style.display    = 'none';
+  renderFingerboardTicks();
+});
+
+// ゲストモード用に変えていたヘッダー・タブの表示を、通常ログイン用に戻す
+function resetGuestUI() {
+  document.getElementById('roleBadge').textContent = '管理者';
+  document.getElementById('logoutBtn').textContent = '🚪 ログアウト';
+  document.getElementById('logoutBtn').title = 'ログアウト';
+  document.getElementById('statsTabBtn').style.display   = '';
+  document.getElementById('historySection').style.display = '';
+  document.getElementById('guestNote').style.display = 'none';
+}
+
+// ===========================
+// プロフィール閲覧（管理者は他のアカウントのデータも選んで見られる）
+// ===========================
+// 管理者用：全アカウント分のセレクトボックスを用意する（一般ユーザーには表示しない）
+async function initProfileViewer() {
+  const select = document.getElementById('adminViewSelect');
+  if (currentUser.role !== 'admin') {
+    select.style.display = 'none';
+    return;
+  }
+  const profiles = await getProfiles();
+  select.innerHTML = profiles.map(p =>
+    `<option value="${p.id}" ${p.id === currentProfileId ? 'selected' : ''}>${p.name}${p.role === 'admin' ? '（管理者）' : ''}</option>`
+  ).join('');
+  select.style.display = 'inline-block';
+}
+
+// 管理者が閲覧先のアカウントを切り替えたら、履歴・統計を読み込み直す
+// （自分の練習記録は常に自分のアカウントに保存されるため、これは「閲覧」だけに影響する）
+document.getElementById('adminViewSelect').addEventListener('change', async (e) => {
   currentProfileId = parseInt(e.target.value, 10);
-  localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
   await renderHistory();
   if (statsLoaded) await renderStats();
 });
 
-// 新しいプロフィールを作成し、それを選択状態にする
-document.getElementById('addProfileBtn').addEventListener('click', async () => {
-  const name = prompt('新しいプロフィール名を入力してください');
-  if (!name || !name.trim()) return;
+// ===========================
+// アカウント設定（パスワード変更・アカウント削除）
+// ===========================
+document.getElementById('showChangePasswordBtn').addEventListener('click', () => {
+  document.getElementById('changePasswordForm').style.display = 'block';
+});
+
+document.getElementById('submitChangePasswordBtn').addEventListener('click', async () => {
+  hideLoginErrors();
+  const current = document.getElementById('currentPasswordInput').value;
+  const next    = document.getElementById('newPasswordInput').value;
   try {
-    const profile = await createProfile(name.trim());
-    currentProfileId = profile.id;
-    localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
-    renderProfileSelect(await getProfiles());
-    await renderHistory();
-    if (statsLoaded) await renderStats();
+    await changePassword(current, next);
+    document.getElementById('currentPasswordInput').value = '';
+    document.getElementById('newPasswordInput').value = '';
+    document.getElementById('changePasswordForm').style.display = 'none';
+    alert('パスワードを変更しました');
   } catch (err) {
-    alert(err.message);
+    showLoginError('changePasswordError', err.message);
   }
 });
 
-// 現在のプロフィールを（履歴ごと）削除する。最後の1件は削除させない
-document.getElementById('deleteProfileBtn').addEventListener('click', async () => {
-  const profiles = await getProfiles();
-  if (profiles.length <= 1) {
-    alert('最後のプロフィールは削除できません');
-    return;
-  }
-  const current = profiles.find(p => p.id === currentProfileId);
-  if (!confirm(`プロフィール「${current?.name}」と、その練習履歴を削除しますか？`)) return;
+// 自分のアカウントを（練習履歴ごと）削除してログアウトする
+document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
+  if (!confirm(`アカウント「${currentUser.name}」と、その練習履歴をすべて削除しますか？この操作は取り消せません。`)) return;
   try {
-    await deleteProfile(currentProfileId);
-    const remaining = await getProfiles();
-    currentProfileId = remaining[0].id;
-    localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileId);
-    renderProfileSelect(remaining);
-    await renderHistory();
-    if (statsLoaded) await renderStats();
+    await deleteProfile(currentUser.id);
+    currentUser = null;
+    currentProfileId = null;
+    showLoginSubForm('login');
+    showLoginScreen();
   } catch (err) {
     alert(err.message);
   }
@@ -969,9 +1184,15 @@ document.getElementById('deleteProfileBtn').addEventListener('click', async () =
 // ===========================
 // 初期化（ファイル読み込み時に実行される）
 // ===========================
-loadScales();            // 音階データを取得してセレクトボックス等を用意する
-initProfiles();           // プロフィール一覧を取得して履歴を表示する
-renderFingerboardTicks(); // 指板の目安線を描画する
+(async function bootstrap() {
+  const me = await getMe();
+  if (me) {
+    currentUser = me;
+    await onLoggedIn();
+  } else {
+    showLoginScreen();
+  }
+})();
 
 
 //442hz

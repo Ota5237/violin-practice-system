@@ -9,17 +9,71 @@
 </head>
 <body>
 
+  <!-- ===== ログイン画面 ===== -->
+  <div id="loginScreen" class="login-wrap" style="display:none">
+    <section class="card login-card">
+      <h1 class="login-title">🎻 音階練習</h1>
+
+      <div id="loginForm">
+        <div class="select-group">
+          <label for="loginName">名前</label>
+          <input type="text" id="loginName" autocomplete="username">
+        </div>
+        <div class="select-group">
+          <label for="loginPassword">パスワード</label>
+          <input type="password" id="loginPassword" autocomplete="current-password">
+        </div>
+        <p class="login-error" id="loginError" style="display:none"></p>
+        <button id="loginBtn" class="btn-primary">ログイン</button>
+        <button id="showSignupBtn" class="btn-secondary">新しいアカウントを作る</button>
+        <button id="guestBtn" class="btn-secondary">アカウントを作らずに練習する</button>
+        <p class="login-note login-note-center">※記録は保存されません</p>
+      </div>
+
+      <div id="signupForm" style="display:none">
+        <div class="select-group">
+          <label for="signupName">名前</label>
+          <input type="text" id="signupName" autocomplete="username">
+        </div>
+        <div class="select-group">
+          <label for="signupPassword">パスワード（4文字以上）</label>
+          <input type="password" id="signupPassword" autocomplete="new-password">
+        </div>
+        <p class="login-error" id="signupError" style="display:none"></p>
+        <button id="signupBtn" class="btn-primary">作成してはじめる</button>
+        <button id="backToLoginBtn" class="btn-secondary">戻る</button>
+      </div>
+
+      <div id="setupPasswordForm" style="display:none">
+        <p class="login-note">「<span id="setupPasswordName"></span>」さんは以前からのアカウントです。<br>はじめてログインする前に、パスワードを設定してください。</p>
+        <div class="select-group">
+          <label for="setupPassword">新しいパスワード（4文字以上）</label>
+          <input type="password" id="setupPassword" autocomplete="new-password">
+        </div>
+        <p class="login-error" id="setupPasswordError" style="display:none"></p>
+        <button id="setupPasswordBtn" class="btn-primary">設定してはじめる</button>
+        <button id="setupPasswordBackBtn" class="btn-secondary">戻る</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="appRoot" style="display:none">
+
   <header>
     <h1>音階練習</h1>
     <div class="profile-bar">
-      <select id="profileSelect"></select>
-      <button id="addProfileBtn" class="btn-icon" title="プロフィールを追加">＋</button>
-      <button id="deleteProfileBtn" class="btn-icon" title="プロフィールを削除">🗑</button>
+      <span class="profile-name" id="profileName"></span>
+      <span class="role-badge" id="roleBadge" style="display:none">管理者</span>
+      <select id="adminViewSelect" style="display:none"></select>
+      <button id="logoutBtn" class="btn-logout" title="ログアウト">🚪 ログアウト</button>
     </div>
     <nav class="tab-nav">
       <button class="tab-btn active" data-tab="practice">練習</button>
-      <button class="tab-btn" data-tab="stats">記録・グラフ</button>
+      <button class="tab-btn" id="statsTabBtn" data-tab="stats">記録・グラフ</button>
     </nav>
+    <p class="login-note login-note-center" id="guestNote" style="display:none">
+      ゲストとして練習中です。記録は保存されません。
+    </p>
   </header>
 
   <main>
@@ -81,6 +135,14 @@
           <button type="button" class="view-toggle-btn" data-view="fingerboard">🎻 指板</button>
         </div>
 
+        <div class="metronome-bar" id="metronomeBar" style="display:none">
+          <span class="metronome-dot"></span>
+          <span class="metronome-dot"></span>
+          <span class="metronome-dot"></span>
+          <span class="metronome-dot"></span>
+          <span class="metronome-dot"></span>
+        </div>
+
         <div class="note-staff" id="noteStaff">
           <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
             <g id="staffLines"></g>
@@ -138,7 +200,7 @@
       </section>
 
       <!-- 練習履歴 -->
-      <section class="card">
+      <section class="card" id="historySection">
         <h2>練習履歴</h2>
         <ul class="history-list" id="historyList">
           <li class="history-empty">まだ履歴がありません</li>
@@ -186,9 +248,29 @@
 
       <button id="clearStatsBtn" class="btn-danger btn-sm">履歴を消去</button>
 
+      <section class="card" id="accountCard">
+        <h2>⚙️ アカウント設定</h2>
+        <button id="showChangePasswordBtn" class="btn-secondary">パスワードを変更</button>
+        <div id="changePasswordForm" style="display:none">
+          <div class="select-group">
+            <label for="currentPasswordInput">現在のパスワード</label>
+            <input type="password" id="currentPasswordInput" autocomplete="current-password">
+          </div>
+          <div class="select-group">
+            <label for="newPasswordInput">新しいパスワード（4文字以上）</label>
+            <input type="password" id="newPasswordInput" autocomplete="new-password">
+          </div>
+          <p class="login-error" id="changePasswordError" style="display:none"></p>
+          <button id="submitChangePasswordBtn" class="btn-primary">変更する</button>
+        </div>
+        <button id="deleteAccountBtn" class="btn-danger btn-sm">アカウントを削除</button>
+      </section>
+
     </div>
 
   </main>
+
+  </div>
 
   <script src="{{ url_for('static', filename='js/pitch.js') }}"></script>
   <script src="{{ url_for('static', filename='js/storage.js') }}"></script>
