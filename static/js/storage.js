@@ -101,3 +101,29 @@ async function getNoteStats(profileId) {
   const res = await apiFetch(`/api/stats/notes?profile_id=${profileId}`);
   return await res.json();
 }
+
+// 全アカウントの比較統計（管理者のみ）
+async function getCompareStats() {
+  const res = await apiFetch('/api/stats/compare');
+  return await res.json();
+}
+
+// 練習中の音符表示・結果画面の表示形式など、アプリ全体の設定。
+// ログイン不要（ゲストの練習画面にも必要なため）
+async function getSettings() {
+  const res = await fetch('/api/settings');
+  if (!res.ok) return { note_display_mode: 'chips', result_display_mode: 'accuracy' };
+  return await res.json();
+}
+
+// 設定の変更は管理者のみ。変えたい項目だけ渡す（例: { note_display_mode: 'staff' }）
+async function updateSettings(partialSettings) {
+  const res = await apiFetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(partialSettings)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '設定の変更に失敗しました');
+  return data;
+}

@@ -110,7 +110,7 @@ header .subtitle { font-size: 0.9rem; color: var(--text-secondary); margin-top: 
 .login-note-center { text-align: center; margin: 8px 0 0; }
 .login-error { color: var(--danger); font-size: 0.9rem; text-align: center; margin: -6px 0 10px; }
 
-input[type="text"], input[type="password"] {
+input[type="text"], input[type="password"], input[type="number"] {
   width: 100%;
   padding: 12px;
   border-radius: 10px;
@@ -138,6 +138,14 @@ main {
 
 .card h2 { font-size: 1.1rem; color: var(--gold); margin-bottom: 16px; }
 
+.demo-tone-heading {
+  font-size: 0.95rem;
+  color: var(--gold);
+  margin: 20px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
 .select-group { margin-bottom: 16px; }
 .select-group > label { display: block; font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 6px; }
 
@@ -154,6 +162,7 @@ select {
 .radio-group { display: flex; gap: 24px; }
 .radio-group label { display: flex; align-items: center; gap: 8px; font-size: 1rem; cursor: pointer; }
 .radio-group input[type="radio"] { width: 20px; height: 20px; accent-color: var(--gold); }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--gold); vertical-align: middle; }
 
 button {
   font-size: 1.1rem;
@@ -242,7 +251,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .note-track { transition: transform 0.35s cubic-bezier(.4,0,.2,1); }
 
-.note-chip {
+/* 【五線譜表示】音符1つぶんのSVGグループ */
+.staff-note {
   transition: opacity 0.3s, transform 0.3s;
 }
 
@@ -275,14 +285,41 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   transition: opacity 0.3s;
 }
 
+.staff-note.done { opacity: 0.3; }
+
+.staff-note.current {
+  transform: scale(1.7);
+}
+.staff-note.current .note-head       { fill: var(--gold-bright); stroke: var(--gold-bright); }
+.staff-note.current .note-solfege    { fill: var(--text-primary); }
+.staff-note.current .note-highlight  { opacity: 0.35; }
+
+/* 【従来の丸チップ表示】音符1つぶんの丸 */
+.note-chip {
+  position: absolute;
+  width: 54px; height: 54px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 2px solid var(--border-soft);
+  color: var(--text-secondary);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transition: width 0.3s, height 0.3s, background 0.3s, border-color 0.3s, opacity 0.3s, box-shadow 0.3s;
+}
+.note-chip-label  { font-size: 1rem; font-weight: bold; line-height: 1.1; }
+.note-chip-octave { font-size: 0.55rem; color: var(--text-muted); line-height: 1; margin-top: 1px; }
+
 .note-chip.done { opacity: 0.3; }
 
 .note-chip.current {
-  transform: scale(1.7);
+  width: 96px; height: 96px;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  border-color: var(--gold-bright);
+  box-shadow: 0 4px 20px rgba(212,162,78,0.5);
+  z-index: 2;
 }
-.note-chip.current .note-head       { fill: var(--gold-bright); stroke: var(--gold-bright); }
-.note-chip.current .note-solfege    { fill: var(--text-primary); }
-.note-chip.current .note-highlight  { opacity: 0.35; }
+.note-chip.current .note-chip-label  { font-size: 2.5rem; color: var(--bg-deep); }
+.note-chip.current .note-chip-octave { font-size: 0.8rem; color: var(--bg-deep); opacity: 0.7; margin-top: 2px; }
 
 /* ===== 表示切り替え（音符 / 指板） ===== */
 .view-toggle { display: flex; justify-content: center; gap: 8px; margin-bottom: 12px; }
@@ -396,8 +433,36 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ===== 正答率表示 ===== */
 .accuracy-display { text-align: center; margin: 16px 0; }
-.accuracy-num { font-size: 4rem; font-weight: bold; color: var(--success); }
-.accuracy-label { font-size: 1rem; color: var(--text-secondary); }
+.accuracy-num { font-size: 4.4rem; font-weight: bold; color: var(--success); line-height: 1.1; }
+.accuracy-label { font-size: 1.15rem; color: var(--text-secondary); margin-bottom: 4px; }
+
+/* 「両方」表示のときに、点数の下に添えるもう一方の数値（正答率など） */
+.accuracy-sub { font-size: 1.7rem; font-weight: bold; color: var(--gold-bright); margin-top: 8px; }
+
+/* ===== 音ごとの点数の内訳（「詳細を見る」ボタンで開閉） ===== */
+.score-detail-list {
+  text-align: left;
+  margin-top: 14px;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg-input);
+}
+
+.score-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 0.9rem;
+}
+.score-detail-row:last-child { border-bottom: none; }
+
+.score-detail-note   { flex: 0 0 56px; font-weight: bold; color: var(--text-primary); }
+.score-detail-cents  { flex: 1; color: var(--text-muted); font-size: 0.8rem; }
+.score-detail-points { flex: 0 0 56px; text-align: right; font-weight: bold; color: var(--gold-bright); }
 
 /* ===== 結果の詳細（音符ごとの正誤） ===== */
 .result-detail { margin: 8px 0 16px; }
@@ -452,3 +517,16 @@ input[type="range"] {
 /* ===== グラフカード ===== */
 canvas { max-height: 260px; }
 .chart-note { font-size: 0.8rem; color: var(--text-muted); text-align: center; margin-top: 10px; }
+
+/* ===== アカウント比較（管理者用） ===== */
+.compare-table-wrap { overflow-x: auto; margin-bottom: 16px; }
+
+.compare-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+.compare-table th, .compare-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border-soft); }
+.compare-table th { color: var(--gold); font-size: 0.8rem; }
+.compare-table td { color: var(--text-primary); }
+.compare-table tr:last-child td { border-bottom: none; }
+.compare-table .compare-role-badge {
+  font-size: 0.65rem; font-weight: bold; color: var(--bg-deep);
+  background: var(--gold); border-radius: 20px; padding: 1px 8px; margin-left: 6px;
+}

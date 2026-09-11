@@ -126,6 +126,39 @@
         <button id="startBtn" class="btn-primary" disabled>▶ 練習開始</button>
       </section>
 
+      <!-- デモモード（管理者用。マイク無しでテンポ練習を自動シミュレートする） -->
+      <section class="card" id="demoModeCard" style="display:none">
+        <h2>🎬 デモモード（管理者用）</h2>
+        <p class="login-note">マイクを使わず、指定した条件で自動的に演奏をシミュレートします（テンポモードのみ）。</p>
+        <div class="select-group">
+          <label><input type="checkbox" id="demoModeEnabled"> デモモードで実行する</label>
+        </div>
+        <div class="select-group">
+          <label for="demoOffsetCents">ズレ幅（セント、基準値。＋で高め／−で低め）：<span id="demoOffsetCentsValue">0</span></label>
+          <input type="range" id="demoOffsetCents" value="0" min="-100" max="100" step="1">
+        </div>
+        <div class="select-group">
+          <label for="demoJitterCents">ばらつき（±セント、音ごとのランダムな揺れ）</label>
+          <input type="number" id="demoJitterCents" value="0" min="0" step="5">
+        </div>
+        <div class="select-group">
+          <label for="demoSilenceChance">無音になる確率（%）</label>
+          <input type="number" id="demoSilenceChance" value="0" min="0" max="100" step="5">
+        </div>
+
+        <h3 class="demo-tone-heading">🔊 セント調整で音を鳴らす</h3>
+        <p class="login-note">選んだ音を、指定したセントだけズラして実際に鳴らします（説明・デモ用）。</p>
+        <div class="select-group">
+          <label for="demoToneNote">音</label>
+          <select id="demoToneNote"></select>
+        </div>
+        <div class="select-group">
+          <label for="demoToneCents">ズレ幅（セント。＋で高め／−で低め）：<span id="demoToneCentsValue">0</span></label>
+          <input type="range" id="demoToneCents" value="0" min="-100" max="100" step="1">
+        </div>
+        <button type="button" class="btn-secondary" id="playDemoToneBtn">▶ 音を鳴らす</button>
+      </section>
+
       <!-- 練習画面 -->
       <section class="card" id="practiceCard" style="display:none">
         <div class="mode-badge" id="modeBadge"></div>
@@ -144,12 +177,8 @@
         </div>
 
         <div class="note-staff" id="noteStaff">
-          <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
-            <g id="staffLines"></g>
-            <text class="staff-clef" x="6" y="98">𝄞</text>
-            <g class="note-track" id="noteTrack"></g>
-          </svg>
           <div class="note-playhead"></div>
+          <div class="note-track" id="noteTrack"></div>
         </div>
 
         <div class="fingerboard" id="fingerboard" style="display:none">
@@ -191,8 +220,11 @@
         <h2>完了！</h2>
         <p id="completeMsg"></p>
         <div class="accuracy-display" id="accuracyDisplay" style="display:none">
+          <div class="accuracy-label" id="accuracyLabel">正答率</div>
           <div class="accuracy-num" id="accuracyNum"></div>
-          <div class="accuracy-label">正答率</div>
+          <div class="accuracy-sub" id="accuracySub" style="display:none"></div>
+          <button id="scoreDetailToggle" class="btn-secondary btn-sm" style="display:none">📊 点数の内訳を見る</button>
+          <div class="score-detail-list" id="scoreDetailList" style="display:none"></div>
         </div>
         <div class="result-detail" id="resultDetail"></div>
         <button id="retryPracticeBtn" class="btn-primary">🔁 もう一回練習</button>
@@ -211,6 +243,23 @@
 
     <!-- ===== 記録・グラフタブ ===== -->
     <div id="tab-stats" style="display:none">
+
+      <!-- アカウント比較（管理者のみ） -->
+      <section class="card" id="compareCard" style="display:none">
+        <h2>👥 アカウント比較</h2>
+        <div class="compare-table-wrap">
+          <table class="compare-table" id="compareTable">
+            <thead>
+              <tr><th>名前</th><th>練習回数</th><th>平均正答率</th><th>最終練習日</th></tr>
+            </thead>
+            <tbody id="compareTableBody"></tbody>
+          </table>
+        </div>
+        <canvas id="chartCompare"></canvas>
+        <p class="chart-note" id="chartCompareEmpty" style="display:none">
+          テンポモードの練習記録があるアカウントがまだありません。
+        </p>
+      </section>
 
       <section class="card">
         <h2>📈 正答率の推移</h2>
@@ -247,6 +296,28 @@
       </section>
 
       <button id="clearStatsBtn" class="btn-danger btn-sm">履歴を消去</button>
+
+      <section class="card" id="noteDisplaySettingCard" style="display:none">
+        <h2>🎚️ 練習画面の設定（管理者用）</h2>
+        <p class="login-note">練習中の音符の表示方法を選べます。全員の練習画面に反映されます。</p>
+        <div class="select-group">
+          <div class="radio-group">
+            <label><input type="radio" name="noteDisplaySetting" value="chips" checked> 🎵 音符（丸）</label>
+            <label><input type="radio" name="noteDisplaySetting" value="staff"> 🎼 五線譜</label>
+          </div>
+        </div>
+        <p class="login-error" id="noteDisplaySettingError" style="display:none"></p>
+
+        <div class="select-group">
+          <label>結果画面の表示（テンポモードのみ）</label>
+          <div class="radio-group">
+            <label><input type="radio" name="resultDisplaySetting" value="accuracy" checked> 📊 正答率</label>
+            <label><input type="radio" name="resultDisplaySetting" value="score"> 🎤 点数（カラオケ風）</label>
+            <label><input type="radio" name="resultDisplaySetting" value="both"> 📊🎤 両方</label>
+          </div>
+        </div>
+        <p class="login-error" id="resultDisplaySettingError" style="display:none"></p>
+      </section>
 
       <section class="card" id="accountCard">
         <h2>⚙️ アカウント設定</h2>

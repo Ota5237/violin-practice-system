@@ -1,10 +1,49 @@
 // マイクの音を拾って周波数（Hz）を判定してくれるオブジェクト（pitch.js で定義）
 const detector = new PitchDetector();
+
+// デモモード用：マイクの代わりに、指定した条件で自動的に「弾いた音」をシミュレートするオブジェクト。
+// PitchDetectorと同じ start(onPitchDetected) / stop() インターフェースを持たせることで、
+// テンポモード側のコードを一切変えずに、本物のdetectorと差し替えて使えるようにしている。
+class DemoPitchSource {
+  constructor({ offsetCents = 0, jitterCents = 0, silenceChance = 0 } = {}) {
+    this.offsetCents   = offsetCents;
+    this.jitterCents   = Math.max(0, jitterCents);
+    this.silenceChance = Math.min(100, Math.max(0, silenceChance));
+    this.timerId       = null;
+  }
+
+  start(onPitchDetected) {
+    // 実機のPitchDetectorが requestAnimationFrame で継続的に値を出すのに合わせ、
+    // 50ms間隔（秒間20回ほど）でシミュレートした周波数を通知する
+    this.timerId = setInterval(() => {
+      if (currentIndex >= practiceNotes.length) return;
+
+      // 無音（弾いていない／マイクが拾えなかった）をシミュレート。この回は何も通知しない
+      if (Math.random() * 100 < this.silenceChance) return;
+
+      const entry    = practiceNotes[currentIndex];
+      const noteData = scalesData.notes[entry.note];
+      const jitter   = this.jitterCents > 0 ? (Math.random() * 2 - 1) * this.jitterCents : 0;
+      const cents    = this.offsetCents + jitter;
+      const freq     = noteData.freq * Math.pow(2, cents / 1200);
+      onPitchDetected(freq);
+    }, 50);
+  }
+
+  stop() {
+    clearInterval(this.timerId);
+    this.timerId = null;
+  }
+}
+
+let activeSource = detector; // 実際に使うピッチ検出ソース（通常はdetector、デモモード時はDemoPitchSourceに差し替える）
 let scalesData      = {}; // notes.json / 各音階ファイルを読み込んだ結果をまとめて保持する
 let practiceNotes   = []; // 今回の練習で弾く音の並び（startPractice()で組み立てる）
 let currentIndex    = 0;  // practiceNotes のうち、今どの音を練習中か
 let isPracticing    = false; // 今マイクの判定結果を受け付けてよいか（判定中の二重反応を防ぐ）
 let currentProfileId = null; // 選択中のプロフィール（ユーザー）のID
+let noteDisplayMode = 'chips'; // 練習中の音符表示：'chips'=従来の丸チップ／'staff'=五線譜（管理者が設定を切り替える）
+let resultDisplayMode = 'accuracy'; // 結果画面の表示：'accuracy'=正答率／'score'=カラオケ風の点数／'both'=両方（管理者が設定を切り替える）
 
 // テンポモード用
 let tempoInterval  = null; // メトロノームのsetInterval ID（stopPractice等で止めるために保持）
@@ -13,6 +52,7 @@ let notesCorrect   = 0;    // 今回の練習で正解した音の数（正答�
 let detectedFreqNow = null; // テンポモードで「直近に検出できた周波数」を一時保存しておく変数
 let practiceResults = []; // 結果画面の詳細表示用：今回の練習で音ごとに何が起きたかの記録
 let currentNoteMissed = false; // 1音ずつモードで、今の音を一発で取れず「惜しい/ズレ大」を経由したか
+let showCurrentGlow = true; // 音符トラックの「今弾く音」の光り方を出すかどうか（テンポモードのカウントダウン中はfalseにする）
 
 // ===== 音階データ読み込み =====
 // カテゴリーを追加する場合はここに1行足す（例: 第3ポジション）
@@ -39,6 +79,19 @@ async function loadScales() {
   scalesData = { notes, categories };
   populateScaleSelect();
   renderFingerboardLandmarks();
+  populateDemoToneNoteSelect();
+}
+
+// デモモードの「セント調整で音を鳴らす」用に、音名セレクトの中身を作る
+function populateDemoToneNoteSelect() {
+  const select = document.getElementById('demoToneNote');
+  if (!select) return;
+  const keys = Object.keys(scalesData.notes);
+  select.innerHTML = keys.map(key =>
+    `<option value="${key}">${scalesData.notes[key].label}（${key}）</option>`
+  ).join('');
+  const defaultKey = keys.includes('A4') ? 'A4' : keys[0];
+  if (defaultKey) select.value = defaultKey;
 }
 
 // ===== カテゴリー・調セレクト =====
@@ -107,6 +160,7 @@ function startPractice() {
   notesCorrect = 0;
   practiceResults = [];
   currentNoteMissed = false;
+  showCurrentGlow = true; // 1音ずつモードは最初から光らせる。テンポモードはstartTempoMode()内で制御する
 
   document.getElementById('setupCard').style.display    = 'none';
   document.getElementById('practiceCard').style.display = 'block';
@@ -132,9 +186,10 @@ function startPractice() {
 function startStepMode() {
   isPracticing = true;
   showCurrentNote();
+  activeSource = detector; // デモモードは今のところテンポモードのみ対応。念のため実マイクに戻しておく
 
   // detector から継続的に周波数(freq)が渡ってくるので、都度判定する
-  detector.start((freq) => {
+  activeSource.start((freq) => {
     if (!isPracticing) return; // 正解直後など、次の音に進む間は判定を無視する
     onPitchDetectedStep(freq);
   });
@@ -185,7 +240,9 @@ function startTempoMode() {
   let pendulumLeft = true; // ビートライトの振り子：次の拍は左端か右端か
 
   // 指板・音符トラックに最初の音をすぐ反映する（前回の練習の表示が
-  // カウントダウン中に一瞬見えてしまうのを防ぐ）
+  // カウントダウン中に一瞬見えてしまうのを防ぐ）。ただし「今弾く音」の光り方は
+  // カウントダウン中は消しておき、演奏が始まる瞬間に光るようにする
+  showCurrentGlow = false;
   showCurrentNote();
 
   const countdownEl = document.getElementById('countdown');
@@ -194,8 +251,16 @@ function startTempoMode() {
   // 電子メトロノームのようにテンポを目で見て分かりやすくするビートライトを表示する
   document.getElementById('metronomeBar').style.display = 'flex';
 
-  // マイク起動（常時聴いておく）
-  detector.start((freq) => {
+  // 管理者がデモモードを有効にしていれば、マイクの代わりにシミュレートしたピッチ源を使う
+  const demoEnabled = currentUser?.role === 'admin' && document.getElementById('demoModeEnabled').checked;
+  activeSource = demoEnabled ? new DemoPitchSource({
+    offsetCents:   parseFloat(document.getElementById('demoOffsetCents').value) || 0,
+    jitterCents:   parseFloat(document.getElementById('demoJitterCents').value) || 0,
+    silenceChance: parseFloat(document.getElementById('demoSilenceChance').value) || 0,
+  }) : detector;
+
+  // マイク（またはデモモードのシミュレート音）を起動し、常時聴いておく
+  activeSource.start((freq) => {
     detectedFreqNow = freq;
     document.getElementById('resultFreq').textContent = `周波数: ${freq.toFixed(1)} Hz`;
   });
@@ -218,6 +283,7 @@ function startTempoMode() {
       countTimer = null;
       countdownEl.style.display = 'none';
       isPracticing = true;
+      showCurrentGlow = true; // ここで初めて「今弾く音」を光らせる
       showCurrentNote();
       playClick(true); // 4拍目 = スタートの合図
       flashMetronome(pendulumLeft, true); // 1拍目（強拍）は左端から
@@ -359,6 +425,38 @@ function playClick(accent = false) {
     osc.stop(ctx.currentTime + 0.08);
   } catch(e) {}
 }
+
+// デモモード（管理者用）：選んだ音を指定セントだけズラして実際に鳴らす。
+// 「セントのズレが実際どのくらいの音の違いなのか」を説明する際のデモ用。
+function playDemoTone() {
+  try {
+    const noteKey  = document.getElementById('demoToneNote').value;
+    const noteData = scalesData.notes[noteKey];
+    if (!noteData) return;
+    const cents = parseFloat(document.getElementById('demoToneCents').value) || 0;
+    const freq  = noteData.freq * Math.pow(2, cents / 1200);
+
+    const ctx  = getClickAudioCtx();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+
+    const duration = 1.5;
+    const now = ctx.currentTime;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.05);
+    gain.gain.setValueAtTime(0.3, now + duration - 0.1);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.start(now);
+    osc.stop(now + duration);
+  } catch(e) {}
+}
+
+document.getElementById('playDemoToneBtn')?.addEventListener('click', playDemoTone);
 
 // ===========================
 // 共通（1音ずつモード・テンポモード両方から使われる）
@@ -572,9 +670,38 @@ function renderStaffLines(width) {
   ).join('');
 }
 
-// practiceNotes 全体分の音符を、五線譜上の正しい高さに一度だけ横一列に並べて描画する
-// （曲が始まるとき・画面サイズが変わったときに呼ばれる）
+// #noteStaff の中身を、表示モードに合わせた入れ物（五線譜のSVG or 従来の丸チップ用div）に
+// 作り直す。管理者が設定を切り替えても、次に練習を始めたときに正しい方が使われる。
+function renderNoteStaffContainer() {
+  const container = document.getElementById('noteStaff');
+  if (noteDisplayMode === 'staff') {
+    container.innerHTML = `
+      <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
+        <g id="staffLines"></g>
+        <text class="staff-clef" x="6" y="98">𝄞</text>
+        <g class="note-track" id="noteTrack"></g>
+      </svg>
+      <div class="note-playhead"></div>`;
+  } else {
+    container.innerHTML = `
+      <div class="note-playhead"></div>
+      <div class="note-track" id="noteTrack"></div>`;
+  }
+}
+
+// practiceNotes 全体分の音符を横一列に並べて描画する（曲が始まるとき・画面サイズが変わったときに呼ばれる）。
+// 表示モード（noteDisplayMode）に応じて、五線譜表示と従来の丸チップ表示を切り替える。
 function renderNoteTrack() {
+  renderNoteStaffContainer();
+  if (noteDisplayMode === 'staff') {
+    renderNoteTrackStaff();
+  } else {
+    renderNoteTrackChips();
+  }
+}
+
+// 【五線譜表示】音符を、五線譜上の正しい高さに配置する
+function renderNoteTrackStaff() {
   const track = document.getElementById('noteTrack');
   const { slot, width } = noteTrackMetrics();
 
@@ -600,7 +727,7 @@ function renderNoteTrack() {
 
     const labelY = y > STAFF_HEIGHT / 2 ? y - 12 : y + 18;
 
-    return `<g class="note-chip" style="transform-origin:${x}px ${y}px">
+    return `<g class="staff-note" style="transform-origin:${x}px ${y}px">
       <circle class="note-highlight" cx="${x}" cy="${y}" r="15"/>
       ${ledgers}
       ${accidentalSvg}
@@ -612,16 +739,35 @@ function renderNoteTrack() {
   updateNoteTrackView();
 }
 
+// 【従来の丸チップ表示】音名の読み仮名＋オクターブ数字を丸の中に表示する
+const NOTE_TOP = 60; // すべての音符の縦位置（固定）
+function renderNoteTrackChips() {
+  const track = document.getElementById('noteTrack');
+  const { slot } = noteTrackMetrics();
+
+  track.innerHTML = practiceNotes.map((entry, i) => {
+    const noteData = scalesData.notes[entry.note];
+    const octave   = entry.note.match(/\d+$/)?.[0] || '';
+    return `<div class="note-chip" style="left:${i * slot}px; top:${NOTE_TOP}px;">
+      <span class="note-chip-label">${noteData.label}</span>
+      <span class="note-chip-octave">${octave}</span>
+    </div>`;
+  }).join('');
+
+  updateNoteTrackView();
+}
+
 // currentIndex に合わせて音符トラック全体を横スクロールさせ（translateX）、
 // 弾き終えた音には done、今弾く音には current のクラスを付け替える
+// （表示モードにより .note-chip（丸チップ）か .staff-note（五線譜）のどちらかが対象になる）
 function updateNoteTrackView() {
   const track = document.getElementById('noteTrack');
   const { slot, focus } = noteTrackMetrics();
   track.style.transform = `translateX(${focus - currentIndex * slot}px)`;
 
-  document.querySelectorAll('.note-chip').forEach((chip, i) => {
+  document.querySelectorAll('.note-chip, .staff-note').forEach((chip, i) => {
     chip.classList.toggle('done', i < currentIndex);
-    chip.classList.toggle('current', i === currentIndex);
+    chip.classList.toggle('current', showCurrentGlow && i === currentIndex);
   });
 }
 
@@ -634,7 +780,7 @@ window.addEventListener('resize', () => {
 // マイク・タイマーを止め、正答率を計算してサーバーに履歴として保存し、
 // 完了カード（結果画面）を表示する
 async function completePractice() {
-  detector.stop();
+  activeSource.stop();
   isPracticing = false;
   if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
   clearMetronomeVisual();
@@ -650,6 +796,7 @@ async function completePractice() {
 
   const accuracy = practiceNotes.length > 0
     ? Math.round(notesCorrect / practiceNotes.length * 100) : 0;
+  const karaokeScore = computeKaraokeScore(practiceResults);
 
   // ゲストモードでは記録を一切保存しない（ログインしていないので保存先のアカウントが無い）
   if (!isGuest) {
@@ -668,15 +815,115 @@ async function completePractice() {
   document.getElementById('completeMsg').textContent =
     `${scaleKey}（${dirLabel}）完了！`;
 
-  // テンポモードのみ正答率を表示
+  // テンポモードのみ結果を表示（管理者の設定で「正答率」か「点数（カラオケ風）」を切り替え）
+  const scoreDetailToggle = document.getElementById('scoreDetailToggle');
+  const scoreDetailList   = document.getElementById('scoreDetailList');
   if (mode === 'tempo') {
     document.getElementById('accuracyDisplay').style.display = 'block';
-    document.getElementById('accuracyNum').textContent = `${accuracy}%`;
+    renderAccuracyOrScore(accuracy, karaokeScore);
+
+    // 音ごとの点数の内訳は、ボタンを押すまでは畳んでおく（結果画面がごちゃつかないように）
+    renderScoreDetail(practiceResults);
+    scoreDetailToggle.textContent   = '📊 点数の内訳を見る';
+    scoreDetailToggle.style.display = 'block';
+    scoreDetailList.style.display   = 'none';
   } else {
     document.getElementById('accuracyDisplay').style.display = 'none';
+    scoreDetailToggle.style.display = 'none';
+    scoreDetailList.style.display   = 'none';
   }
 
   renderResultDetail(mode);
+}
+
+// 音ごとの点数の内訳（音名・ズレ幅・点数）を一覧にして描画する。
+// 表示のON/OFF自体はscoreDetailToggleのクリックハンドラ側で行う
+function renderScoreDetail(results) {
+  const listEl = document.getElementById('scoreDetailList');
+  listEl.innerHTML = results.map(r => {
+    const noteData = scalesData.notes[r.note];
+    const octave    = r.note.match(/\d+$/)?.[0] || '';
+    const centsText = r.cents == null ? '音なし' : `${r.cents > 0 ? '+' : ''}${Math.round(r.cents)}セント`;
+    const points    = computeNoteScore(r);
+    const symbol    = noteScoreSymbol(points);
+    return `<div class="score-detail-row">
+      <span class="score-detail-note">${noteData.label}${octave}</span>
+      <span class="score-detail-cents">${centsText}</span>
+      <span class="score-detail-points">${symbol} ${points}点</span>
+    </div>`;
+  }).join('');
+}
+
+// 「点数の内訳を見る」ボタンで開閉する
+document.getElementById('scoreDetailToggle').addEventListener('click', () => {
+  const listEl = document.getElementById('scoreDetailList');
+  const toggle = document.getElementById('scoreDetailToggle');
+  const showing = listEl.style.display !== 'none';
+  listEl.style.display   = showing ? 'none' : 'block';
+  toggle.textContent     = showing ? '📊 点数の内訳を見る' : '📊 点数の内訳を閉じる';
+});
+
+// 音程のズレ幅（cents）から1音ぶんの判定を決めるための2つの境目
+// （1音ずつモードの「正解／惜しい／ズレ大」と同じ基準を採用している）
+const SCORE_GOOD_CENTS  = 15; // これ以内なら○（2点）
+const SCORE_CLOSE_CENTS = 35; // これ以内なら△（1点）。これを超えたら×（0点）
+
+// 1音ぶんの判定を2/1/0点で返す。
+// ・音が検出できなかった（cents無し）場合は×（0点）
+// ・|cents| が15セント以内なら○（2点）
+// ・35セント以内なら△（1点）
+// ・それを超えたら×（0点）
+function computeNoteScore(result) {
+  if (result.cents == null) return 0;
+
+  const absCents = Math.abs(result.cents);
+  if (absCents <= SCORE_GOOD_CENTS)  return 2; // ○
+  if (absCents <= SCORE_CLOSE_CENTS) return 1; // △
+  return 0; // ×
+}
+
+// 2/1/0点を○/△/×の記号に変換する（内訳表示用）
+function noteScoreSymbol(points) {
+  if (points === 2) return '○';
+  if (points === 1) return '△';
+  return '×';
+}
+
+// 練習1回ぶんのカラオケ風スコアを { total: 合計得点, max: 満点（弾いた音符数×2点） } で返す。
+// 100点満点への換算はせず、「合計得点／満点」をそのまま使う
+function computeKaraokeScore(results) {
+  const totalPoints = results.reduce((sum, r) => sum + computeNoteScore(r), 0);
+  const maxPoints    = results.length * 2;
+  return { total: totalPoints, max: maxPoints };
+}
+
+// 正答率（accuracy、0〜100）とカラオケ風の点数（karaokeScore = {total, max}）を、
+// 設定に応じて「正答率」「点数（カラオケ風）」「両方」のいずれかで描画する。
+// 正答率は「正解した音の数÷全体」の単純な割合、点数は音ごとのズレ幅も加味した別の指標で、
+// 意図的に別の数値になる（正解でも完全一致でなければ点数は正答率よりズレて出ることがある）。
+function renderAccuracyOrScore(accuracy, karaokeScore) {
+  const numEl   = document.getElementById('accuracyNum');
+  const labelEl = document.getElementById('accuracyLabel');
+  const subEl   = document.getElementById('accuracySub');
+
+  const scoreText  = `${karaokeScore.total}/${karaokeScore.max}点`;
+  const showsScore = resultDisplayMode === 'score' || resultDisplayMode === 'both';
+
+  if (showsScore) {
+    numEl.textContent   = scoreText;
+    labelEl.textContent = 'スコア';
+  } else {
+    numEl.textContent   = `${accuracy}%`;
+    labelEl.textContent = '正答率';
+  }
+
+  // 「両方」のときは、メインで出していない方（正答率）をサブ行に添える
+  if (resultDisplayMode === 'both') {
+    subEl.textContent   = `（正答率 ${accuracy}%）`;
+    subEl.style.display = 'block';
+  } else {
+    subEl.style.display = 'none';
+  }
 }
 
 // 完了画面に「どの音が合っていて、どの音がズレていたか」を音符ごとに一覧表示する。
@@ -693,7 +940,7 @@ function renderResultDetail(mode) {
   const chips = practiceResults.map(r => {
     const noteData = scalesData.notes[r.note];
     const octave   = r.note.match(/\d+$/)?.[0] || '';
-    const centsStr = r.cents == null ? '' : `${r.cents > 0 ? '+' : ''}${Math.round(r.cents)}¢`;
+    const centsStr = r.cents == null ? '' : `${r.cents > 0 ? '+' : ''}${Math.round(r.cents)}`;
     const subText  = r.outcome === 'retry' ? 'やり直し' : (r.cents == null ? '音なし' : centsStr);
 
     return `<div class="result-chip ${r.outcome}" title="${r.string}">
@@ -712,14 +959,15 @@ function renderResultDetail(mode) {
          <span><i class="dot retry"></i>やり直しあり ${practiceResults.filter(r => r.outcome === 'retry').length}</span>
        </div>`;
 
-  detailEl.innerHTML = legend + `<div class="result-chip-grid">${chips}</div>`;
+  detailEl.innerHTML = legend + `<div class="result-chip-grid">${chips}</div>` +
+    `<p class="chart-note">※数字は音程のズレ幅（セント）</p>`;
 }
 
 // 「中断」ボタンなどで練習を途中でやめるときの処理。
 // マイク・メトロノーム・カウントダウンをすべて止め、設定画面に戻る
 // （completePractice()と違い、履歴には保存しない）
 function stopPractice() {
-  detector.stop();
+  activeSource.stop();
   isPracticing = false;
   if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
   if (countTimer)    { clearInterval(countTimer);    countTimer = null; }
@@ -760,11 +1008,54 @@ async function renderHistory() {
 // ===========================
 // グラフ描画（統計タブ、Chart.js を使用）
 // ===========================
-const charts = { accuracy: null, daily: null, scale: null, notes: null, strings: null }; // 描画済みのChartインスタンスを保持（再描画時に破棄するため）
+const charts = { accuracy: null, daily: null, scale: null, notes: null, strings: null, compare: null }; // 描画済みのChartインスタンスを保持（再描画時に破棄するため）
+
+// 【管理者用】全アカウントの練習回数・平均正答率・最終練習日を一覧表にし、
+// 正答率をグラフでも比較できるようにする
+async function renderCompareStats() {
+  document.getElementById('compareCard').style.display = 'block';
+
+  const rows = await getCompareStats();
+
+  document.getElementById('compareTableBody').innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.name}${r.role === 'admin' ? '<span class="compare-role-badge">管理者</span>' : ''}</td>
+      <td>${r.count}</td>
+      <td>${r.avg_accuracy != null ? r.avg_accuracy + '%' : '−'}</td>
+      <td>${r.last_practiced_at || '−'}</td>
+    </tr>
+  `).join('');
+
+  // 平均正答率が出せるのはテンポモードの記録があるアカウントだけなので、それだけを棒グラフにする
+  const withAccuracy = rows.filter(r => r.avg_accuracy != null);
+  document.getElementById('chartCompare').style.display      = withAccuracy.length > 0 ? 'block' : 'none';
+  document.getElementById('chartCompareEmpty').style.display = withAccuracy.length > 0 ? 'none'  : 'block';
+
+  charts.compare?.destroy();
+  if (withAccuracy.length > 0) {
+    const compareCtx = document.getElementById('chartCompare').getContext('2d');
+    charts.compare = new Chart(compareCtx, {
+      type: 'bar',
+      data: {
+        labels: withAccuracy.map(r => r.name),
+        datasets: [{
+          label: '平均正答率 (%)',
+          data: withAccuracy.map(r => r.avg_accuracy),
+          backgroundColor: 'rgba(232,196,104,0.75)',
+          borderRadius: 6
+        }]
+      },
+      options: chartOptions('正答率 (%)', 0, 100)
+    });
+  }
+}
 
 // 統計データをサーバーから取得し、「正答率の推移」「日別練習回数」「調ごとの正答率」
-// 「苦手な音」「弦ごとの正答率」の5つのグラフを描画する（統計タブを開いたときに1回だけ呼ばれる）
+// 「苦手な音」「弦ごとの正答率」の5つのグラフを描画する（統計タブを開いたときに1回だけ呼ばれる）。
+// 管理者の場合は、あわせて全アカウントの比較セクションも描画する
 async function renderStats() {
+  if (currentUser?.role === 'admin') await renderCompareStats();
+
   const data     = await getStats(currentProfileId);
   const noteData = await getNoteStats(currentProfileId);
   const daily    = [...data.daily].reverse();
@@ -930,6 +1221,14 @@ document.getElementById('bpmRange').addEventListener('input', (e) => {
   document.getElementById('bpmValue').textContent = e.target.value;
 });
 
+// デモモードの「ズレ幅」スライダーを動かしたら、隣に表示している数値も更新する
+document.getElementById('demoOffsetCents').addEventListener('input', (e) => {
+  document.getElementById('demoOffsetCentsValue').textContent = e.target.value;
+});
+document.getElementById('demoToneCents').addEventListener('input', (e) => {
+  document.getElementById('demoToneCentsValue').textContent = e.target.value;
+});
+
 document.getElementById('startBtn').addEventListener('click', startPractice);
 document.getElementById('stopBtn').addEventListener('click', stopPractice);
 
@@ -1060,6 +1359,71 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   showLoginScreen();
 });
 
+// アプリ全体の設定（練習中の音符表示モード・結果画面の表示形式）をサーバーから読み込み、
+// noteDisplayMode / resultDisplayMode に反映する。
+// ゲストの画面にも反映する必要があるため、ログイン有無に関わらず呼ぶ
+async function loadAppSettings() {
+  const settings = await getSettings();
+  noteDisplayMode = settings.note_display_mode === 'staff' ? 'staff' : 'chips';
+  resultDisplayMode = ['score', 'both'].includes(settings.result_display_mode)
+    ? settings.result_display_mode : 'accuracy';
+}
+
+// 管理者にだけ「練習画面の設定」カードを表示し、現在の設定をラジオボタンに反映する
+function initNoteDisplaySetting() {
+  const card = document.getElementById('noteDisplaySettingCard');
+  if (!currentUser || currentUser.role !== 'admin') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  document.querySelectorAll('input[name="noteDisplaySetting"]').forEach(radio => {
+    radio.checked = radio.value === noteDisplayMode;
+  });
+  document.querySelectorAll('input[name="resultDisplaySetting"]').forEach(radio => {
+    radio.checked = radio.value === resultDisplayMode;
+  });
+}
+
+// 管理者にだけ「デモモード」カードを表示する（練習設定画面）。
+// デモモードの値はサーバーには保存せず、他のユーザーには一切影響しない、その場限りの設定
+function initDemoModeUI() {
+  document.getElementById('demoModeCard').style.display =
+    (currentUser && currentUser.role === 'admin') ? 'block' : 'none';
+}
+
+// 管理者が音符の表示モードを切り替えたら、サーバーに保存する（反映は次回の練習開始時から）
+document.querySelectorAll('input[name="noteDisplaySetting"]').forEach(radio => {
+  radio.addEventListener('change', async (e) => {
+    const errorEl = document.getElementById('noteDisplaySettingError');
+    errorEl.style.display = 'none';
+    try {
+      await updateSettings({ note_display_mode: e.target.value });
+      noteDisplayMode = e.target.value;
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.style.display = 'block';
+      initNoteDisplaySetting(); // 失敗したら選択状態を元に戻す
+    }
+  });
+});
+
+// 管理者が結果画面の表示形式を切り替えたら、サーバーに保存する（反映は次回の結果画面から）
+document.querySelectorAll('input[name="resultDisplaySetting"]').forEach(radio => {
+  radio.addEventListener('change', async (e) => {
+    const errorEl = document.getElementById('resultDisplaySettingError');
+    errorEl.style.display = 'none';
+    try {
+      await updateSettings({ result_display_mode: e.target.value });
+      resultDisplayMode = e.target.value;
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.style.display = 'block';
+      initNoteDisplaySetting(); // 失敗したら選択状態を元に戻す
+    }
+  });
+});
+
 // ログイン成功直後の共通処理：アプリ本体を表示し、必要なデータを読み込む
 async function onLoggedIn() {
   isGuest = false;
@@ -1068,6 +1432,9 @@ async function onLoggedIn() {
   showApp();
   renderAccountBar();
   await loadScales();
+  await loadAppSettings();
+  initNoteDisplaySetting();
+  initDemoModeUI();
   await initProfileViewer();
   await renderHistory();
   statsLoaded = false;
@@ -1104,6 +1471,7 @@ document.getElementById('guestBtn').addEventListener('click', async () => {
   document.getElementById('guestNote').style.display = 'block';
 
   await loadScales();
+  await loadAppSettings();
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'practice'));
   document.getElementById('tab-practice').style.display = 'block';
   document.getElementById('tab-stats').style.display    = 'none';

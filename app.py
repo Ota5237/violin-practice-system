@@ -64,6 +64,22 @@ def init_db():
             )
         ''')
 
+        # アプリ全体の設定（練習中の音符表示・結果画面の表示形式）。1行だけ持つ設定テーブル。
+        # 管理者だけが変更でき、全員（ゲスト含む）の画面に反映される
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id                  INTEGER PRIMARY KEY CHECK (id = 1),
+                note_display_mode   TEXT NOT NULL DEFAULT 'chips',
+                result_display_mode TEXT NOT NULL DEFAULT 'accuracy'
+            )
+        ''')
+        existing_settings_cols = {row[1] for row in conn.execute('PRAGMA table_info(app_settings)')}
+        if 'result_display_mode' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN result_display_mode TEXT NOT NULL DEFAULT 'accuracy'")
+        conn.execute('''
+            INSERT OR IGNORE INTO app_settings (id, note_display_mode, result_display_mode) VALUES (1, 'chips', 'accuracy')
+        ''')
+
         # 旧スキーマ（mode/bpm/profile_id等の列がない）のDBを移行
         existing_cols = {row[1] for row in conn.execute('PRAGMA table_info(history)')}
         migrations = {
@@ -202,6 +218,53 @@ def me():
         session.clear()
         return jsonify({'error': 'not logged in'}), 401
     return jsonify(dict(profile)), 200
+
+# ===== アプリ全体の設定を取得（練習中の音符表示モードなど） =====
+# ログインしていないゲストの練習画面にも反映する必要があるため、誰でも読める
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            'SELECT note_display_mode, result_display_mode FROM app_settings WHERE id = 1'
+        ).fetchone()
+    if row is None:
+        return jsonify({'note_display_mode': 'chips', 'result_display_mode': 'accuracy'})
+    return jsonify(dict(row))
+
+# ===== アプリ全体の設定を変更（管理者のみ）。渡された項目だけ更新する =====
+@app.route('/api/settings', methods=['POST'])
+@login_required
+def update_settings():
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    data = request.get_json() or {}
+    updates = {}
+
+    if 'note_display_mode' in data:
+        if data['note_display_mode'] not in ('chips', 'staff'):
+            return jsonify({'error': 'note_display_modeはchipsかstaffで指定してください'}), 400
+        updates['note_display_mode'] = data['note_display_mode']
+
+    if 'result_display_mode' in data:
+        if data['result_display_mode'] not in ('accuracy', 'score', 'both'):
+            return jsonify({'error': 'result_display_modeはaccuracy・score・bothのいずれかで指定してください'}), 400
+        updates['result_display_mode'] = data['result_display_mode']
+
+    if not updates:
+        return jsonify({'error': '更新する項目がありません'}), 400
+
+    with sqlite3.connect(DB_PATH) as conn:
+        set_clause = ', '.join(f'{col} = ?' for col in updates)  # updatesのキーは上のホワイトリストのみ
+        conn.execute(f'UPDATE app_settings SET {set_clause} WHERE id = 1', tuple(updates.values()))
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            'SELECT note_display_mode, result_display_mode FROM app_settings WHERE id = 1'
+        ).fetchone()
+
+    return jsonify(dict(row)), 200
 
 # ===== パスワード変更（本人のみ） =====
 @app.route('/api/change-password', methods=['POST'])
@@ -457,6 +520,29 @@ def get_note_stats():
         'by_note':   [dict(r) for r in by_note],
         'by_string': [dict(r) for r in by_string]
     })
+
+# ===== 全アカウントの比較統計（管理者のみ） =====
+@app.route('/api/stats/compare', methods=['GET'])
+@login_required
+def get_compare_stats():
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute('''
+            SELECT
+                p.id, p.name, p.role,
+                COUNT(h.id) as count,
+                ROUND(AVG(CASE WHEN h.mode = 'tempo' THEN h.accuracy END), 1) as avg_accuracy,
+                MAX(h.practiced_at) as last_practiced_at
+            FROM profiles p
+            LEFT JOIN history h ON h.profile_id = p.id
+            GROUP BY p.id
+            ORDER BY p.id
+        ''').fetchall()
+
+    return jsonify([dict(r) for r in rows])
 
 if __name__ == '__main__':
     init_db()
