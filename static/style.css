@@ -294,33 +294,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .staff-note.current .note-solfege    { fill: var(--text-primary); }
 .staff-note.current .note-highlight  { opacity: 0.35; }
 
-/* 【従来の丸チップ表示】音符1つぶんの丸 */
-.note-chip {
-  position: absolute;
-  width: 54px; height: 54px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: var(--bg-card);
-  border: 2px solid var(--border-soft);
-  color: var(--text-secondary);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  transition: width 0.3s, height 0.3s, background 0.3s, border-color 0.3s, opacity 0.3s, box-shadow 0.3s;
-}
-.note-chip-label  { font-size: 1rem; font-weight: bold; line-height: 1.1; }
-.note-chip-octave { font-size: 0.55rem; color: var(--text-muted); line-height: 1; margin-top: 1px; }
-
-.note-chip.done { opacity: 0.3; }
-
-.note-chip.current {
-  width: 96px; height: 96px;
-  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
-  border-color: var(--gold-bright);
-  box-shadow: 0 4px 20px rgba(212,162,78,0.5);
-  z-index: 2;
-}
-.note-chip.current .note-chip-label  { font-size: 2.5rem; color: var(--bg-deep); }
-.note-chip.current .note-chip-octave { font-size: 0.8rem; color: var(--bg-deep); opacity: 0.7; margin-top: 2px; }
-
 /* ===== 表示切り替え（音符 / 指板） ===== */
 .view-toggle { display: flex; justify-content: center; gap: 8px; margin-bottom: 12px; }
 .view-toggle-btn {

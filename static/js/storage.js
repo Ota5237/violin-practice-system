@@ -108,15 +108,15 @@ async function getCompareStats() {
   return await res.json();
 }
 
-// 練習中の音符表示・結果画面の表示形式など、アプリ全体の設定。
+// 結果画面の表示形式など、アプリ全体の設定。
 // ログイン不要（ゲストの練習画面にも必要なため）
 async function getSettings() {
   const res = await fetch('/api/settings');
-  if (!res.ok) return { note_display_mode: 'chips', result_display_mode: 'accuracy' };
+  if (!res.ok) return { result_display_mode: 'accuracy' };
   return await res.json();
 }
 
-// 設定の変更は管理者のみ。変えたい項目だけ渡す（例: { note_display_mode: 'staff' }）
+// 設定の変更は管理者のみ。変えたい項目だけ渡す（例: { result_display_mode: 'score' }）
 async function updateSettings(partialSettings) {
   const res = await apiFetch('/api/settings', {
     method: 'POST',

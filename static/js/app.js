@@ -42,7 +42,6 @@ let practiceNotes   = []; // 今回の練習で弾く音の並び（startPractic
 let currentIndex    = 0;  // practiceNotes のうち、今どの音を練習中か
 let isPracticing    = false; // 今マイクの判定結果を受け付けてよいか（判定中の二重反応を防ぐ）
 let currentProfileId = null; // 選択中のプロフィール（ユーザー）のID
-let noteDisplayMode = 'chips'; // 練習中の音符表示：'chips'=従来の丸チップ／'staff'=五線譜（管理者が設定を切り替える）
 let resultDisplayMode = 'accuracy'; // 結果画面の表示：'accuracy'=正答率／'score'=カラオケ風の点数／'both'=両方（管理者が設定を切り替える）
 
 // テンポモード用
@@ -670,34 +669,22 @@ function renderStaffLines(width) {
   ).join('');
 }
 
-// #noteStaff の中身を、表示モードに合わせた入れ物（五線譜のSVG or 従来の丸チップ用div）に
-// 作り直す。管理者が設定を切り替えても、次に練習を始めたときに正しい方が使われる。
+// #noteStaff の中身を、五線譜のSVGに作り直す
 function renderNoteStaffContainer() {
   const container = document.getElementById('noteStaff');
-  if (noteDisplayMode === 'staff') {
-    container.innerHTML = `
-      <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
-        <g id="staffLines"></g>
-        <text class="staff-clef" x="6" y="98">𝄞</text>
-        <g class="note-track" id="noteTrack"></g>
-      </svg>
-      <div class="note-playhead"></div>`;
-  } else {
-    container.innerHTML = `
-      <div class="note-playhead"></div>
-      <div class="note-track" id="noteTrack"></div>`;
-  }
+  container.innerHTML = `
+    <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
+      <g id="staffLines"></g>
+      <text class="staff-clef" x="6" y="98">𝄞</text>
+      <g class="note-track" id="noteTrack"></g>
+    </svg>
+    <div class="note-playhead"></div>`;
 }
 
 // practiceNotes 全体分の音符を横一列に並べて描画する（曲が始まるとき・画面サイズが変わったときに呼ばれる）。
-// 表示モード（noteDisplayMode）に応じて、五線譜表示と従来の丸チップ表示を切り替える。
 function renderNoteTrack() {
   renderNoteStaffContainer();
-  if (noteDisplayMode === 'staff') {
-    renderNoteTrackStaff();
-  } else {
-    renderNoteTrackChips();
-  }
+  renderNoteTrackStaff();
 }
 
 // 【五線譜表示】音符を、五線譜上の正しい高さに配置する
@@ -739,33 +726,14 @@ function renderNoteTrackStaff() {
   updateNoteTrackView();
 }
 
-// 【従来の丸チップ表示】音名の読み仮名＋オクターブ数字を丸の中に表示する
-const NOTE_TOP = 60; // すべての音符の縦位置（固定）
-function renderNoteTrackChips() {
-  const track = document.getElementById('noteTrack');
-  const { slot } = noteTrackMetrics();
-
-  track.innerHTML = practiceNotes.map((entry, i) => {
-    const noteData = scalesData.notes[entry.note];
-    const octave   = entry.note.match(/\d+$/)?.[0] || '';
-    return `<div class="note-chip" style="left:${i * slot}px; top:${NOTE_TOP}px;">
-      <span class="note-chip-label">${noteData.label}</span>
-      <span class="note-chip-octave">${octave}</span>
-    </div>`;
-  }).join('');
-
-  updateNoteTrackView();
-}
-
 // currentIndex に合わせて音符トラック全体を横スクロールさせ（translateX）、
 // 弾き終えた音には done、今弾く音には current のクラスを付け替える
-// （表示モードにより .note-chip（丸チップ）か .staff-note（五線譜）のどちらかが対象になる）
 function updateNoteTrackView() {
   const track = document.getElementById('noteTrack');
   const { slot, focus } = noteTrackMetrics();
   track.style.transform = `translateX(${focus - currentIndex * slot}px)`;
 
-  document.querySelectorAll('.note-chip, .staff-note').forEach((chip, i) => {
+  document.querySelectorAll('.staff-note').forEach((chip, i) => {
     chip.classList.toggle('done', i < currentIndex);
     chip.classList.toggle('current', showCurrentGlow && i === currentIndex);
   });
@@ -1359,27 +1327,22 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   showLoginScreen();
 });
 
-// アプリ全体の設定（練習中の音符表示モード・結果画面の表示形式）をサーバーから読み込み、
-// noteDisplayMode / resultDisplayMode に反映する。
+// アプリ全体の設定（結果画面の表示形式）をサーバーから読み込み、resultDisplayMode に反映する。
 // ゲストの画面にも反映する必要があるため、ログイン有無に関わらず呼ぶ
 async function loadAppSettings() {
   const settings = await getSettings();
-  noteDisplayMode = settings.note_display_mode === 'staff' ? 'staff' : 'chips';
   resultDisplayMode = ['score', 'both'].includes(settings.result_display_mode)
     ? settings.result_display_mode : 'accuracy';
 }
 
-// 管理者にだけ「練習画面の設定」カードを表示し、現在の設定をラジオボタンに反映する
-function initNoteDisplaySetting() {
-  const card = document.getElementById('noteDisplaySettingCard');
+// 管理者にだけ「結果画面の設定」カードを表示し、現在の設定をラジオボタンに反映する
+function initResultDisplaySetting() {
+  const card = document.getElementById('resultDisplaySettingCard');
   if (!currentUser || currentUser.role !== 'admin') {
     card.style.display = 'none';
     return;
   }
   card.style.display = 'block';
-  document.querySelectorAll('input[name="noteDisplaySetting"]').forEach(radio => {
-    radio.checked = radio.value === noteDisplayMode;
-  });
   document.querySelectorAll('input[name="resultDisplaySetting"]').forEach(radio => {
     radio.checked = radio.value === resultDisplayMode;
   });
@@ -1392,22 +1355,6 @@ function initDemoModeUI() {
     (currentUser && currentUser.role === 'admin') ? 'block' : 'none';
 }
 
-// 管理者が音符の表示モードを切り替えたら、サーバーに保存する（反映は次回の練習開始時から）
-document.querySelectorAll('input[name="noteDisplaySetting"]').forEach(radio => {
-  radio.addEventListener('change', async (e) => {
-    const errorEl = document.getElementById('noteDisplaySettingError');
-    errorEl.style.display = 'none';
-    try {
-      await updateSettings({ note_display_mode: e.target.value });
-      noteDisplayMode = e.target.value;
-    } catch (err) {
-      errorEl.textContent = err.message;
-      errorEl.style.display = 'block';
-      initNoteDisplaySetting(); // 失敗したら選択状態を元に戻す
-    }
-  });
-});
-
 // 管理者が結果画面の表示形式を切り替えたら、サーバーに保存する（反映は次回の結果画面から）
 document.querySelectorAll('input[name="resultDisplaySetting"]').forEach(radio => {
   radio.addEventListener('change', async (e) => {
@@ -1419,7 +1366,7 @@ document.querySelectorAll('input[name="resultDisplaySetting"]').forEach(radio =>
     } catch (err) {
       errorEl.textContent = err.message;
       errorEl.style.display = 'block';
-      initNoteDisplaySetting(); // 失敗したら選択状態を元に戻す
+      initResultDisplaySetting(); // 失敗したら選択状態を元に戻す
     }
   });
 });
@@ -1433,7 +1380,7 @@ async function onLoggedIn() {
   renderAccountBar();
   await loadScales();
   await loadAppSettings();
-  initNoteDisplaySetting();
+  initResultDisplaySetting();
   initDemoModeUI();
   await initProfileViewer();
   await renderHistory();

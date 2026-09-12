@@ -69,15 +69,16 @@ def init_db():
         conn.execute('''
             CREATE TABLE IF NOT EXISTS app_settings (
                 id                  INTEGER PRIMARY KEY CHECK (id = 1),
-                note_display_mode   TEXT NOT NULL DEFAULT 'chips',
                 result_display_mode TEXT NOT NULL DEFAULT 'accuracy'
             )
         ''')
         existing_settings_cols = {row[1] for row in conn.execute('PRAGMA table_info(app_settings)')}
         if 'result_display_mode' not in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings ADD COLUMN result_display_mode TEXT NOT NULL DEFAULT 'accuracy'")
+        if 'note_display_mode' in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings DROP COLUMN note_display_mode")
         conn.execute('''
-            INSERT OR IGNORE INTO app_settings (id, note_display_mode, result_display_mode) VALUES (1, 'chips', 'accuracy')
+            INSERT OR IGNORE INTO app_settings (id, result_display_mode) VALUES (1, 'accuracy')
         ''')
 
         # 旧スキーマ（mode/bpm/profile_id等の列がない）のDBを移行
@@ -226,10 +227,10 @@ def get_settings():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            'SELECT note_display_mode, result_display_mode FROM app_settings WHERE id = 1'
+            'SELECT result_display_mode FROM app_settings WHERE id = 1'
         ).fetchone()
     if row is None:
-        return jsonify({'note_display_mode': 'chips', 'result_display_mode': 'accuracy'})
+        return jsonify({'result_display_mode': 'accuracy'})
     return jsonify(dict(row))
 
 # ===== アプリ全体の設定を変更（管理者のみ）。渡された項目だけ更新する =====
@@ -241,11 +242,6 @@ def update_settings():
 
     data = request.get_json() or {}
     updates = {}
-
-    if 'note_display_mode' in data:
-        if data['note_display_mode'] not in ('chips', 'staff'):
-            return jsonify({'error': 'note_display_modeはchipsかstaffで指定してください'}), 400
-        updates['note_display_mode'] = data['note_display_mode']
 
     if 'result_display_mode' in data:
         if data['result_display_mode'] not in ('accuracy', 'score', 'both'):
@@ -261,7 +257,7 @@ def update_settings():
         conn.commit()
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            'SELECT note_display_mode, result_display_mode FROM app_settings WHERE id = 1'
+            'SELECT result_display_mode FROM app_settings WHERE id = 1'
         ).fetchone()
 
     return jsonify(dict(row)), 200
