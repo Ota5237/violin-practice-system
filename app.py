@@ -4,12 +4,26 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import sqlite3
 import os
 import secrets
+import json
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), 'database', 'history.db')
 SECRET_KEY_PATH = os.path.join(os.path.dirname(__file__), 'database', 'secret.key')
 DEFAULT_PROFILE_NAME = 'デフォルト'
+
+# 音階のカテゴリー（第1ポジション／2オクターブ）。フロントの選択肢と対応しており固定。
+CATEGORY_LABELS = {
+    'first_position': '第一ポジションの音階',
+    'two_octave':      '2オクターブの音階',
+}
+VALID_STRINGS = {'G弦', 'D弦', 'A弦', 'E弦'}
+
+# 音階データに含まれる音名(note)が、周波数対応表(notes.json)に実在するキーかを検証するために読み込む
+def get_valid_note_keys():
+    notes_path = os.path.join(os.path.dirname(__file__), 'static', 'data', 'notes.json')
+    with open(notes_path, encoding='utf-8') as f:
+        return set(json.load(f).keys())
 
 # ===== セッション用の秘密鍵（初回起動時に生成してファイルに保存し、以後使い回す） =====
 def load_secret_key():
@@ -123,6 +137,42 @@ def init_db():
                 'INSERT INTO profiles (name, created_at, role) VALUES (?, ?, ?)',
                 (DEFAULT_PROFILE_NAME, datetime.now().strftime('%Y/%m/%d %H:%M'), 'admin')
             )
+
+        # 音階（調）。以前は static/data/scales/*.json に直書きしていたが、
+        # 管理者がWeb画面（五線譜クリック入力）から追加できるようDBに移した
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS scales (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                category_key  TEXT NOT NULL,
+                name          TEXT NOT NULL,
+                notes_json    TEXT NOT NULL,
+                arpeggio_json TEXT,
+                created_at    TEXT NOT NULL
+            )
+        ''')
+
+        # 初回起動時だけ、旧スキーマ（静的JSONファイル）の内容をDBに取り込む
+        if conn.execute('SELECT COUNT(*) FROM scales').fetchone()[0] == 0:
+            scales_dir = os.path.join(os.path.dirname(__file__), 'static', 'data', 'scales')
+            seeded_at  = datetime.now().strftime('%Y/%m/%d %H:%M')
+            for category_key in CATEGORY_LABELS:
+                path = os.path.join(scales_dir, f'{category_key}.json')
+                if not os.path.exists(path):
+                    continue
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+                for scale in data.get('scales', {}).values():
+                    conn.execute(
+                        'INSERT INTO scales (category_key, name, notes_json, arpeggio_json, created_at) '
+                        'VALUES (?, ?, ?, ?, ?)',
+                        (
+                            category_key,
+                            scale['name'],
+                            json.dumps(scale['notes'], ensure_ascii=False),
+                            json.dumps(scale['arpeggio'], ensure_ascii=False) if scale.get('arpeggio') else None,
+                            seeded_at,
+                        )
+                    )
 
         conn.commit()
 
@@ -538,6 +588,136 @@ def get_note_stats():
         'by_note':   [dict(r) for r in by_note],
         'by_string': [dict(r) for r in by_string]
     })
+
+# ===== 音階（調）一覧を取得 =====
+# 練習画面のセレクトボックスに使うため、誰でも読める（ログイン不要）
+@app.route('/api/scales', methods=['GET'])
+def get_scales():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute('SELECT * FROM scales ORDER BY category_key, id').fetchall()
+
+    categories = {key: {'label': label, 'scales': {}} for key, label in CATEGORY_LABELS.items()}
+    for row in rows:
+        if row['category_key'] not in categories:
+            continue
+        categories[row['category_key']]['scales'][str(row['id'])] = {
+            'name':     row['name'],
+            'notes':    json.loads(row['notes_json']),
+            'arpeggio': json.loads(row['arpeggio_json']) if row['arpeggio_json'] else None,
+        }
+    return jsonify({'categories': categories})
+
+# 音階の登録・更新に共通のバリデーション。
+# 問題なければ (category_key, name, notes, arpeggio) を返し、問題があれば (None, None, None, None, エラー文言) を返す
+def validate_scale_payload(data):
+    category_key = data.get('category_key')
+    name         = (data.get('name') or '').strip()
+    notes        = data.get('notes')
+    arpeggio     = data.get('arpeggio')  # 任意。無ければnull
+
+    if category_key not in CATEGORY_LABELS:
+        return None, None, None, None, '不正なカテゴリーです'
+    if not name:
+        return None, None, None, None, '調の名前を入力してください'
+
+    valid_notes = get_valid_note_keys()
+
+    def validate_note_list(note_list, label):
+        if not isinstance(note_list, list) or len(note_list) < 2:
+            return f'{label}は2音以上で入力してください'
+        for n in note_list:
+            if not isinstance(n, dict):
+                return f'{label}のデータ形式が不正です'
+            if n.get('note') not in valid_notes:
+                return f'{label}に存在しない音名が含まれています: {n.get("note")}'
+            if n.get('string') not in VALID_STRINGS:
+                return f'{label}の弦の指定が不正です: {n.get("string")}'
+            if not (n.get('position') or '').strip():
+                return f'{label}に指の情報が入力されていない音があります'
+        return None
+
+    error = validate_note_list(notes, '音階')
+    if error:
+        return None, None, None, None, error
+
+    if arpeggio is not None:
+        error = validate_note_list(arpeggio, 'アルペジオ')
+        if error:
+            return None, None, None, None, error
+
+    return category_key, name, notes, arpeggio, None
+
+# ===== 音階（調）を新規追加（管理者のみ） =====
+# 管理画面の五線譜クリック入力から送られてくる、音符の並び（と任意でアルペジオ）を登録する
+@app.route('/api/scales', methods=['POST'])
+@login_required
+def create_scale():
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    category_key, name, notes, arpeggio, error = validate_scale_payload(request.get_json() or {})
+    if error:
+        return jsonify({'error': error}), 400
+
+    created_at = datetime.now().strftime('%Y/%m/%d %H:%M')
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            'INSERT INTO scales (category_key, name, notes_json, arpeggio_json, created_at) VALUES (?, ?, ?, ?, ?)',
+            (
+                category_key, name,
+                json.dumps(notes, ensure_ascii=False),
+                json.dumps(arpeggio, ensure_ascii=False) if arpeggio else None,
+                created_at,
+            )
+        )
+        conn.commit()
+        scale_id = cur.lastrowid
+
+    return jsonify({'id': scale_id, 'category_key': category_key, 'name': name}), 201
+
+# ===== 音階（調）を修正（管理者のみ） =====
+@app.route('/api/scales/<int:scale_id>', methods=['PUT'])
+@login_required
+def update_scale(scale_id):
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    category_key, name, notes, arpeggio, error = validate_scale_payload(request.get_json() or {})
+    if error:
+        return jsonify({'error': error}), 400
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            'UPDATE scales SET category_key = ?, name = ?, notes_json = ?, arpeggio_json = ? WHERE id = ?',
+            (
+                category_key, name,
+                json.dumps(notes, ensure_ascii=False),
+                json.dumps(arpeggio, ensure_ascii=False) if arpeggio else None,
+                scale_id,
+            )
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return jsonify({'error': '指定された音階が見つかりません'}), 404
+
+    return jsonify({'id': scale_id, 'category_key': category_key, 'name': name}), 200
+
+# ===== 音階（調）を削除（管理者のみ） =====
+# 過去の練習記録は音階名を文字列としてそのまま保持しているため、削除しても記録には影響しない
+@app.route('/api/scales/<int:scale_id>', methods=['DELETE'])
+@login_required
+def delete_scale(scale_id):
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute('DELETE FROM scales WHERE id = ?', (scale_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return jsonify({'error': '指定された音階が見つかりません'}), 404
+
+    return jsonify({'deleted': True}), 200
 
 if __name__ == '__main__':
     init_db()

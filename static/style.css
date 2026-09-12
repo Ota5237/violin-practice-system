@@ -295,6 +295,57 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .staff-note.current .note-solfege    { fill: var(--text-primary); }
 .staff-note.current .note-highlight  { opacity: 0.35; }
 
+/* ===== 音階を追加（管理者用）：五線譜クリック入力 ===== */
+.scale-builder-staff { height: 260px; }
+
+/* 正規の五線（.staff-line）より薄く・色を変えて、あくまでガイドだと分かるようにする */
+.scale-builder-guide-line { stroke: var(--text-muted); stroke-width: 1; opacity: 0.35; stroke-dasharray: 3 3; }
+
+.scale-builder-hint { font-size: 0.8rem; margin: 4px 0 12px; }
+
+/* 仮配置中（未確定）の音符は点線の輪郭で、確定済みの音符と見分けられるようにする */
+.staff-note.pending .note-head { fill: rgba(232,196,104,0.25); stroke: var(--gold-bright); stroke-dasharray: 3 2; }
+.staff-note.pending .note-accidental { fill: var(--gold-bright); }
+
+.scale-builder-pending-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+.scale-builder-actions { display: flex; gap: 10px; margin-top: 4px; }
+.scale-builder-actions button { margin-top: 0; }
+
+.scale-builder-note-list {
+  margin-top: 16px;
+  padding-left: 1.4em;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.scale-builder-note-list li { margin-bottom: 4px; }
+.scale-builder-note-list li .turn-mark { color: var(--gold-bright); font-weight: bold; margin-left: 4px; }
+
+/* ===== 音階一覧（管理者用）：編集・削除 ===== */
+.scale-list-category { margin-bottom: 20px; }
+.scale-list-category:last-child { margin-bottom: 0; }
+.scale-list-category h3 { font-size: 0.9rem; color: var(--gold); margin-bottom: 6px; }
+
+.scale-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.scale-list-row:last-child { border-bottom: none; }
+
+.scale-list-name { font-size: 0.9rem; color: var(--text-primary); }
+.scale-list-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+
+.scale-list-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.scale-list-actions button { width: auto; margin: 0; padding: 6px 12px; font-size: 0.8rem; }
+
+.scale-list-empty { color: var(--text-muted); font-size: 0.85rem; }
+
 /* ===== 表示切り替え（音符 / 指板） ===== */
 .view-toggle { display: flex; justify-content: center; gap: 8px; margin-bottom: 12px; }
 .view-toggle-btn {

@@ -215,7 +215,33 @@
       <!-- デモモード（管理者用。マイク無しでテンポ練習を自動シミュレートする。練習とは別の入り口として独立させてある） -->
       <section class="card" id="demoModeCard">
         <h2>🎬 デモモード（管理者用）</h2>
-        <p class="login-note">マイクを使わず、指定した条件で自動的に演奏をシミュレートします（テンポモードのみ）。「練習」タブの練習設定で選んだカテゴリー・調・練習タイプがそのまま使われます。</p>
+        <p class="login-note">マイクを使わず、指定した条件で自動的に演奏をシミュレートします（テンポモードのみ）。</p>
+
+        <div class="select-group">
+          <label for="demoCategorySelect">カテゴリーを選ぶ</label>
+          <select id="demoCategorySelect">
+            <option value="first_position">第一ポジションの音階</option>
+            <option value="two_octave">2オクターブの音階</option>
+          </select>
+        </div>
+
+        <div class="select-group">
+          <label for="demoScaleSelect">調を選ぶ</label>
+          <select id="demoScaleSelect">
+            <option value="">-- 選択してください --</option>
+          </select>
+        </div>
+
+        <div class="select-group">
+          <label>練習タイプ</label>
+          <div class="radio-group">
+            <label><input type="radio" name="demoDirection" value="up" checked> ▲ 上行</label>
+            <label><input type="radio" name="demoDirection" value="down"> ▼ 下行</label>
+            <label><input type="radio" name="demoDirection" value="updown"> ▲▼ 上下</label>
+            <label><input type="radio" name="demoDirection" value="arpeggio"> 🎵 アルペジオ</label>
+          </div>
+        </div>
+
         <div class="select-group">
           <label for="demoBpmRange">テンポ：<span id="demoBpmValue">60</span> BPM</label>
           <input type="range" id="demoBpmRange" min="40" max="120" value="60" step="4">
@@ -327,6 +353,108 @@
         <p class="login-error" id="subjectAccountError" style="display:none"></p>
         <p class="settings-success-msg" id="subjectAccountSuccess" style="display:none"></p>
         <button id="createSubjectAccountBtn" class="btn-primary">作成する</button>
+      </section>
+
+      <section class="card" id="scaleBuilderCard" style="display:none">
+        <h2>🎼 音階を追加（管理者用）</h2>
+
+        <!-- ステップ1：カテゴリーと調の名前 -->
+        <div id="scaleBuilderSetup">
+          <div class="select-group">
+            <label for="scaleBuilderCategory">カテゴリー</label>
+            <select id="scaleBuilderCategory">
+              <option value="first_position">第一ポジションの音階</option>
+              <option value="two_octave">2オクターブの音階</option>
+            </select>
+          </div>
+          <div class="select-group">
+            <label for="scaleBuilderName">調の名前（例：ハ長調（C-dur））</label>
+            <input type="text" id="scaleBuilderName" autocomplete="off">
+          </div>
+          <p class="login-error" id="scaleBuilderSetupError" style="display:none"></p>
+          <button type="button" class="btn-primary" id="scaleBuilderStartBtn">音符の入力を始める</button>
+        </div>
+
+        <!-- ステップ2：五線譜クリックで音符を1つずつ入力 -->
+        <div id="scaleBuilderInput" style="display:none">
+          <p class="login-note" id="scaleBuilderPhaseLabel"></p>
+
+          <div class="note-staff scale-builder-staff" id="scaleBuilderStaffWrap">
+            <svg class="staff-svg" id="scaleBuilderStaffSvg" viewBox="0 -20 460 150" preserveAspectRatio="xMidYMid meet">
+              <g id="scaleBuilderGuideLines"></g>
+              <g id="scaleBuilderStaffLines"></g>
+              <text class="staff-clef" x="6" y="98">𝄞</text>
+              <g id="scaleBuilderPendingNote"></g>
+              <rect id="scaleBuilderClickArea" x="0" y="-20" width="460" height="150" fill="transparent" style="cursor:pointer"/>
+            </svg>
+          </div>
+          <p class="login-note scale-builder-hint">五線・加線のどこでもクリックすると、その高さの音を仮に置けます（色の薄い線はガイド用の加線です）。</p>
+
+          <!-- クリックで仮配置した音を確定するパネル -->
+          <div id="scaleBuilderNotePanel" style="display:none">
+            <div class="select-group scale-builder-pending-row">
+              <span>音名：<strong id="scaleBuilderPendingLabel"></strong></span>
+              <button type="button" class="btn-secondary btn-sm" id="scaleBuilderAccidentalBtn">♯／♭／ナチュラル切替</button>
+            </div>
+            <div class="select-group">
+              <label for="scaleBuilderString">弦</label>
+              <select id="scaleBuilderString">
+                <option value="G弦">G弦</option>
+                <option value="D弦">D弦</option>
+                <option value="A弦">A弦</option>
+                <option value="E弦">E弦</option>
+              </select>
+            </div>
+            <div class="select-group">
+              <label for="scaleBuilderPosition">指</label>
+              <select id="scaleBuilderPosition">
+                <option value="開放弦">開放弦</option>
+                <option value="1の指">1の指</option>
+                <option value="1の指(低)">1の指(低)</option>
+                <option value="1の指(高)">1の指(高)</option>
+                <option value="2の指">2の指</option>
+                <option value="2の指(低)">2の指(低)</option>
+                <option value="2の指(高)">2の指(高)</option>
+                <option value="3の指">3の指</option>
+                <option value="3の指(低)">3の指(低)</option>
+                <option value="3の指(高)">3の指(高)</option>
+                <option value="4の指">4の指</option>
+                <option value="4の指(低)">4の指(低)</option>
+                <option value="4の指(高)">4の指(高)</option>
+              </select>
+            </div>
+            <div class="select-group" id="scaleBuilderTurnGroup">
+              <label><input type="checkbox" id="scaleBuilderTurnCheckbox"> ここが折り返し点（最高音）</label>
+            </div>
+            <button type="button" class="btn-primary" id="scaleBuilderConfirmNoteBtn">この音を確定して次へ</button>
+          </div>
+
+          <div class="scale-builder-actions">
+            <button type="button" class="btn-secondary" id="scaleBuilderBackBtn">◀ 一つ戻る</button>
+            <button type="button" class="btn-primary" id="scaleBuilderFinishBtn">入力を完了する</button>
+          </div>
+
+          <ol id="scaleBuilderNoteList" class="scale-builder-note-list"></ol>
+        </div>
+
+        <!-- ステップ3：アルペジオを続けて入力するか -->
+        <div id="scaleBuilderArpeggioAsk" style="display:none">
+          <p class="login-note">アルペジオも登録しますか？</p>
+          <button type="button" class="btn-primary" id="scaleBuilderArpeggioYesBtn">はい、続けて入力する</button>
+          <button type="button" class="btn-secondary" id="scaleBuilderArpeggioNoBtn">いいえ、このまま保存する</button>
+        </div>
+
+        <button type="button" class="btn-danger btn-sm" id="scaleBuilderCancelBtn" style="display:none">✕ 入力を取り消す</button>
+
+        <p class="login-error" id="scaleBuilderError" style="display:none"></p>
+        <p class="settings-success-msg" id="scaleBuilderSuccess" style="display:none"></p>
+      </section>
+
+      <button type="button" class="btn-secondary" id="scaleListToggleBtn" style="display:none">📋 音階一覧を見る</button>
+
+      <section class="card" id="scaleListCard" style="display:none">
+        <h2>📋 音階一覧（管理者用）</h2>
+        <div id="scaleListContent"></div>
       </section>
 
       <section class="card" id="signupSettingCard" style="display:none">

@@ -67,6 +67,38 @@ async function createProfile(name, password) {
   return data;
 }
 
+// 新しい音階（調）を登録する（管理者のみ）。notesは音符データの配列、arpeggioは任意
+async function createScale(categoryKey, name, notes, arpeggio) {
+  const res = await apiFetch('/api/scales', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_key: categoryKey, name, notes, arpeggio: arpeggio || null })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '音階の登録に失敗しました');
+  return data;
+}
+
+// 既存の音階（調）を修正する（管理者のみ）
+async function updateScale(scaleId, categoryKey, name, notes, arpeggio) {
+  const res = await apiFetch(`/api/scales/${scaleId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ category_key: categoryKey, name, notes, arpeggio: arpeggio || null })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '音階の修正に失敗しました');
+  return data;
+}
+
+// 音階（調）を削除する（管理者のみ）
+async function deleteScale(scaleId) {
+  const res = await apiFetch(`/api/scales/${scaleId}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '音階の削除に失敗しました');
+  return data;
+}
+
 async function deleteProfile(profileId) {
   const res = await apiFetch(`/api/profiles/${profileId}`, { method: 'DELETE' });
   const data = await res.json();

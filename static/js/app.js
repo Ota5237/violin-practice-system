@@ -56,29 +56,21 @@ let currentNoteMissed = false; // 1音ずつモードで、今の音を一発で
 let showCurrentGlow = true; // 音符トラックの「今弾く音」の光り方を出すかどうか（テンポモードのカウントダウン中はfalseにする）
 
 // ===== 音階データ読み込み =====
-// カテゴリーを追加する場合はここに1行足す（例: 第3ポジション）
-const CATEGORY_FILES = [
-  { key: 'first_position', file: '/static/data/scales/first_position.json' },
-  { key: 'two_octave',     file: '/static/data/scales/two_octave.json' },
-];
-
 // ページ読み込み時に音階データ一式（音名→周波数の対応表 notes.json と、
-// 各カテゴリーの音階定義ファイル）をまとめて取得し、scalesData に格納する。
+// DBに登録済みの音階一覧 /api/scales）をまとめて取得し、scalesData に格納する。
 // 完了したらセレクトボックスと指板の目印を描画する。
 async function loadScales() {
-  const [notesRes, ...categoryResults] = await Promise.all([
+  const [notesRes, scalesRes] = await Promise.all([
     fetch('/static/data/notes.json'),
-    ...CATEGORY_FILES.map(c => fetch(c.file)),
+    fetch('/api/scales'),
   ]);
 
-  const notes      = await notesRes.json();
-  const categories = {};
-  for (let i = 0; i < CATEGORY_FILES.length; i++) {
-    categories[CATEGORY_FILES[i].key] = await categoryResults[i].json();
-  }
+  const notes = await notesRes.json();
+  const { categories } = await scalesRes.json();
 
   scalesData = { notes, categories };
   populateScaleSelect();
+  populateDemoScaleSelect();
   renderFingerboardLandmarks();
   populateDemoToneNoteSelect();
 }
@@ -96,18 +88,23 @@ function populateDemoToneNoteSelect() {
 }
 
 // ===== カテゴリー・調セレクト =====
-// 「カテゴリー」セレクトボックス（第1ポジションなど）で今選ばれているキーを返す
+// 指定したカテゴリーキーに属する音階一覧（{キー: 音階データ} の形）を返す
+function getScalesForCategory(categoryKey) {
+  return scalesData.categories?.[categoryKey]?.scales || {};
+}
+
+// 「カテゴリー」セレクトボックス（第1ポジションなど）で今選ばれているキーを返す（練習タブ用）
 function getCurrentCategoryKey() {
   return document.getElementById('categorySelect').value;
 }
 
-// 現在選択中のカテゴリーに属する音階一覧（{キー: 音階データ} の形）を返す
+// 練習タブで現在選択中のカテゴリーに属する音階一覧を返す
 function getCurrentScales() {
-  return scalesData.categories?.[getCurrentCategoryKey()]?.scales || {};
+  return getScalesForCategory(getCurrentCategoryKey());
 }
 
 // 「調」セレクトボックスの中身を、現在のカテゴリーの音階一覧で作り直す
-// （カテゴリーを切り替えたときに呼ばれる）
+// （カテゴリーを切り替えたときに呼ばれる。練習タブ用）
 function populateScaleSelect() {
   const scales     = getCurrentScales();
   const scaleSelect = document.getElementById('scaleSelect');
@@ -117,6 +114,20 @@ function populateScaleSelect() {
     keys.map(key => `<option value="${key}">${scales[key].name}</option>`).join('');
 
   document.getElementById('startBtn').disabled = true;
+}
+
+// デモタブの「調」セレクトボックスの中身を、デモタブの「カテゴリー」で選ばれている音階一覧で作り直す。
+// 練習タブとは別の入り口として独立させてあるため、専用のセレクトを持つ
+function populateDemoScaleSelect() {
+  const categoryKey = document.getElementById('demoCategorySelect').value;
+  const scales      = getScalesForCategory(categoryKey);
+  const scaleSelect = document.getElementById('demoScaleSelect');
+  const keys        = Object.keys(scales);
+
+  scaleSelect.innerHTML = '<option value="">-- 選択してください --</option>' +
+    keys.map(key => `<option value="${key}">${scales[key].name}</option>`).join('');
+
+  document.getElementById('startDemoBtn').disabled = true;
 }
 
 // 音階の音リストを 上行/下行/上下 に分割する。
@@ -141,8 +152,8 @@ function splitScaleNotes(scale) {
 
 // カテゴリー・調・練習タイプ（direction）から、今回弾く音の並びを組み立てる。
 // 通常の練習開始（startPractice）とデモ開始（startDemo）の両方から使う共通処理
-function buildPracticeNotes(scaleKey, direction) {
-  const scale = getCurrentScales()[scaleKey];
+function buildPracticeNotes(categoryKey, scaleKey, direction) {
+  const scale = getScalesForCategory(categoryKey)[scaleKey];
   const { up, down, updown } = splitScaleNotes(scale);
   if (direction === 'up')       return up;
   if (direction === 'down')     return down;
@@ -159,7 +170,7 @@ function startPractice() {
   const direction = document.querySelector('input[name="direction"]:checked').value;
   const mode      = document.querySelector('input[name="mode"]:checked').value;
 
-  practiceNotes = buildPracticeNotes(scaleKey, direction);
+  practiceNotes = buildPracticeNotes(getCurrentCategoryKey(), scaleKey, direction);
 
   currentIndex = 0;
   notesCorrect = 0;
@@ -186,13 +197,14 @@ function startPractice() {
 }
 
 // ===== デモ開始（管理者用。マイクの代わりにシミュレートしたピッチ源でテンポモードを実行する） =====
-// 「デモ開始」ボタンで呼ばれる。練習設定で選んだカテゴリー・調・練習タイプはそのまま使い、
-// テンポ・ズレ幅・ばらつき・無音確率はデモモードカード側の設定を使う
+// 「デモ開始」ボタンで呼ばれる。カテゴリー・調・練習タイプはデモタブ自身のセレクトを使う
+// （練習タブとは別の入り口として独立させてあるため）
 function startDemo() {
-  const scaleKey  = document.getElementById('scaleSelect').value;
-  const direction = document.querySelector('input[name="direction"]:checked').value;
+  const categoryKey = document.getElementById('demoCategorySelect').value;
+  const scaleKey     = document.getElementById('demoScaleSelect').value;
+  const direction    = document.querySelector('input[name="demoDirection"]:checked').value;
 
-  practiceNotes = buildPracticeNotes(scaleKey, direction);
+  practiceNotes = buildPracticeNotes(categoryKey, scaleKey, direction);
 
   currentIndex = 0;
   notesCorrect = 0;
@@ -790,8 +802,10 @@ async function completePractice() {
   clearMetronomeVisual();
   document.getElementById('metronomeBar').style.display = 'none';
 
-  const scaleKey  = document.getElementById('scaleSelect').value;
-  const direction = document.querySelector('input[name="direction"]:checked').value;
+  const categoryKey = document.getElementById(isDemoRun ? 'demoCategorySelect' : 'categorySelect').value;
+  const scaleKey    = document.getElementById(isDemoRun ? 'demoScaleSelect' : 'scaleSelect').value;
+  const scaleName   = getScalesForCategory(categoryKey)[scaleKey]?.name || scaleKey;
+  const direction   = document.querySelector(`input[name="${isDemoRun ? 'demoDirection' : 'direction'}"]:checked`).value;
   // デモ実行は練習設定の「練習モード」ラジオに関係なく常にテンポモード扱い
   const mode      = isDemoRun ? 'tempo' : document.querySelector('input[name="mode"]:checked').value;
   const bpm       = mode === 'tempo'
@@ -814,7 +828,7 @@ async function completePractice() {
     // profile_idは送らない。誰の記録として保存するかはサーバー側で
     // ログイン中の本人アカウントに固定しているため（他人になりすまして記録できないように）
     const entry = await saveHistory({
-      scale: scaleKey, direction: dirLabel, mode,
+      scale: scaleName, direction: dirLabel, mode,
       bpm, notes_correct: notesCorrect, notes_total: practiceNotes.length,
       note_results: practiceResults
     });
@@ -824,7 +838,7 @@ async function completePractice() {
   document.getElementById('practiceCard').style.display  = 'none';
   document.getElementById('completeCard').style.display  = 'block';
   document.getElementById('completeMsg').textContent =
-    `${scaleKey}（${dirLabel}）完了！`;
+    `${scaleName}（${dirLabel}）完了！`;
 
   // テンポモードのみ結果を表示（管理者の設定で「正答率」か「点数（カラオケ風）」を切り替え）
   const scoreDetailToggle = document.getElementById('scoreDetailToggle');
@@ -1221,10 +1235,13 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ===========================
 // カテゴリーを変更したら、調セレクトの中身を作り直す
 document.getElementById('categorySelect').addEventListener('change', populateScaleSelect);
+document.getElementById('demoCategorySelect').addEventListener('change', populateDemoScaleSelect);
 
-// 調を選んだら「開始」「デモ開始」ボタンを押せるようにする（未選択なら押せない）
+// 調を選んだら「開始」ボタンを押せるようにする（未選択なら押せない）
 document.getElementById('scaleSelect').addEventListener('change', (e) => {
-  document.getElementById('startBtn').disabled     = e.target.value === '';
+  document.getElementById('startBtn').disabled = e.target.value === '';
+});
+document.getElementById('demoScaleSelect').addEventListener('change', (e) => {
   document.getElementById('startDemoBtn').disabled = e.target.value === '';
 });
 
@@ -1461,6 +1478,379 @@ document.querySelectorAll('input[name="signupSetting"]').forEach(radio => {
   });
 });
 
+// ===========================
+// 音階を追加（管理者用）：五線譜クリック入力
+// ===========================
+const SCALE_BUILDER_MIN_OFFSET = staffOffset('G3'); // クリック可能な下限（ヴァイオリンの最低音）
+const SCALE_BUILDER_MAX_OFFSET = staffOffset('H6'); // クリック可能な上限（音名対応表の最高音）
+const STAFF_STEP_LETTER = ['C', 'D', 'E', 'F', 'G', 'A', 'B']; // STAFF_LETTER_STEPの逆引き
+const SCALE_BUILDER_ACCIDENTALS = [null, 's', 'f'];
+
+let scaleBuilderPhase     = null; // null(未開始) | 'notes'(音階) | 'arpeggio'
+let scaleBuilderNotes     = [];   // 確定済みの音階の音符
+let scaleBuilderArpeggio  = [];   // 確定済みのアルペジオの音符
+let scaleBuilderPending   = null; // { offset, accidental } クリックして仮配置中（未確定）の音
+let scaleBuilderEditingId = null; // 音階一覧の「編集」から開始した場合、対象の音階ID（新規追加ならnull）
+
+// 管理者にだけ「音階を追加」カードと「音階一覧」ボタンを表示する（設定タブ）
+function initScaleBuilder() {
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  document.getElementById('scaleBuilderCard').style.display   = isAdmin ? 'block' : 'none';
+  document.getElementById('scaleListToggleBtn').style.display = isAdmin ? 'block' : 'none';
+  document.getElementById('scaleListCard').style.display      = 'none';
+}
+
+// 五線譜上のオフセット(段数)と臨時記号から、notes.json用のキー（例："Fs4"）を組み立てる。
+// 実在しない組み合わせ（例：ミの♯、シの♯）ならnullを返す
+function scaleBuilderNoteKey(offset, accidental) {
+  const E4_STEP = 4 * 7 + STAFF_LETTER_STEP.E; // =30（E4を基準0とする換算に使う定数）
+  const total   = offset + E4_STEP;
+  const octave  = Math.floor(total / 7);
+  const letter  = STAFF_STEP_LETTER[((total % 7) + 7) % 7];
+  const key = letter === 'B'
+    ? (accidental === 'f' ? `Bf${octave}` : accidental === 's' ? null : `H${octave}`) // シ♯は存在しない
+    : `${letter}${accidental || ''}${octave}`;
+  return key && scalesData.notes[key] ? key : null;
+}
+
+// 現在の臨時記号から、実在する次の臨時記号へ切り替える（存在しない組み合わせは飛ばす）
+function scaleBuilderNextAccidental(offset, current) {
+  const idx = SCALE_BUILDER_ACCIDENTALS.indexOf(current);
+  for (let i = 1; i <= SCALE_BUILDER_ACCIDENTALS.length; i++) {
+    const candidate = SCALE_BUILDER_ACCIDENTALS[(idx + i + SCALE_BUILDER_ACCIDENTALS.length) % SCALE_BUILDER_ACCIDENTALS.length];
+    if (scaleBuilderNoteKey(offset, candidate)) return candidate;
+  }
+  return current; // ナチュラルは必ず存在するため、理論上ここには来ない
+}
+
+// 五線（正規の5本）と、その外側のガイド用加線をまとめて描画する（入力ステップに入ったら1回だけ呼ぶ）
+function renderScaleBuilderGuides() {
+  const guideOffsets = [];
+  for (let o = SCALE_BUILDER_MIN_OFFSET; o <= SCALE_BUILDER_MAX_OFFSET; o += 2) {
+    if (o < 0 || o > 8) guideOffsets.push(o); // 五線の範囲(0,2,4,6,8)の外側だけガイド線を引く
+  }
+  document.getElementById('scaleBuilderGuideLines').innerHTML = guideOffsets.map(o =>
+    `<line class="scale-builder-guide-line" x1="40" y1="${staffY(o)}" x2="420" y2="${staffY(o)}"/>`
+  ).join('');
+  document.getElementById('scaleBuilderStaffLines').innerHTML = [0, 2, 4, 6, 8].map(o =>
+    `<line class="staff-line" x1="40" y1="${staffY(o)}" x2="420" y2="${staffY(o)}"/>`
+  ).join('');
+}
+
+// クリックした位置（画面座標）をSVGのローカル座標に変換し、一番近い五線譜の段（オフセット）に丸める
+document.getElementById('scaleBuilderClickArea').addEventListener('click', (e) => {
+  if (scaleBuilderPhase !== 'notes' && scaleBuilderPhase !== 'arpeggio') return;
+
+  const svg = document.getElementById('scaleBuilderStaffSvg');
+  const pt  = svg.createSVGPoint();
+  pt.x = e.clientX;
+  pt.y = e.clientY;
+  const local = pt.matrixTransform(svg.getScreenCTM().inverse());
+
+  let offset = Math.round((STAFF_BOTTOM_Y - local.y) / STAFF_STEP_PX);
+  offset = Math.max(SCALE_BUILDER_MIN_OFFSET, Math.min(SCALE_BUILDER_MAX_OFFSET, offset));
+
+  scaleBuilderPending = { offset, accidental: null };
+  renderScaleBuilderPendingNote();
+  showScaleBuilderPendingPanel();
+});
+
+// 仮配置中の音符を、五線譜上に点線の輪郭で描画する（確定済みの音符とは見た目で区別する）
+function renderScaleBuilderPendingNote() {
+  const group = document.getElementById('scaleBuilderPendingNote');
+  if (!scaleBuilderPending) { group.innerHTML = ''; return; }
+
+  const { offset, accidental } = scaleBuilderPending;
+  const y = staffY(offset);
+  const x = 230;
+  const ledgers = ledgerOffsets(offset).map(o => {
+    const ly = staffY(o);
+    return `<line class="note-ledger" x1="${x - 12}" y1="${ly}" x2="${x + 12}" y2="${ly}"/>`;
+  }).join('');
+  const accidentalGlyph = accidental === 's' ? '♯' : accidental === 'f' ? '♭' : '';
+  const accidentalSvg = accidentalGlyph
+    ? `<text class="note-accidental" x="${x - 13}" y="${y + 4}">${accidentalGlyph}</text>`
+    : '';
+
+  group.innerHTML = `<g class="staff-note pending">
+    <circle class="note-highlight" cx="${x}" cy="${y}" r="15" style="opacity:0.25"/>
+    ${ledgers}
+    ${accidentalSvg}
+    <ellipse class="note-head" cx="${x}" cy="${y}" rx="7" ry="5.5"/>
+  </g>`;
+
+  const key = scaleBuilderNoteKey(offset, accidental);
+  document.getElementById('scaleBuilderPendingLabel').textContent =
+    key ? `${scalesData.notes[key].label}（${key}）` : '（この位置に実在する音がありません）';
+}
+
+document.getElementById('scaleBuilderAccidentalBtn').addEventListener('click', () => {
+  if (!scaleBuilderPending) return;
+  scaleBuilderPending.accidental = scaleBuilderNextAccidental(scaleBuilderPending.offset, scaleBuilderPending.accidental);
+  renderScaleBuilderPendingNote();
+});
+
+// 仮配置中の音を確定するパネルの表示・非表示
+function showScaleBuilderPendingPanel() {
+  document.getElementById('scaleBuilderNotePanel').style.display = 'block';
+  document.getElementById('scaleBuilderTurnGroup').style.display = scaleBuilderPhase === 'notes' ? 'block' : 'none';
+  document.getElementById('scaleBuilderString').value   = 'G弦';
+  document.getElementById('scaleBuilderPosition').value = '開放弦';
+  document.getElementById('scaleBuilderTurnCheckbox').checked = false;
+}
+function hideScaleBuilderPendingPanel() {
+  document.getElementById('scaleBuilderNotePanel').style.display = 'none';
+  scaleBuilderPending = null;
+  document.getElementById('scaleBuilderPendingNote').innerHTML = '';
+}
+
+// 「この音を確定して次へ」：仮配置中の音を、弦・指（・折り返し点）と合わせてリストに追加する
+document.getElementById('scaleBuilderConfirmNoteBtn').addEventListener('click', () => {
+  if (!scaleBuilderPending) return;
+  const key = scaleBuilderNoteKey(scaleBuilderPending.offset, scaleBuilderPending.accidental);
+  if (!key) return; // 実在しない組み合わせのままでは確定できない
+
+  const entry = {
+    note:     key,
+    string:   document.getElementById('scaleBuilderString').value,
+    position: document.getElementById('scaleBuilderPosition').value,
+  };
+  if (scaleBuilderPhase === 'notes' && document.getElementById('scaleBuilderTurnCheckbox').checked) {
+    entry.turn = true;
+  }
+
+  (scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio).push(entry);
+  hideScaleBuilderPendingPanel();
+  renderScaleBuilderNoteList();
+});
+
+// 「◀ 一つ戻る」：仮配置中の音があればそれを取り消し、無ければ直前に確定した音を1つ取り消す
+document.getElementById('scaleBuilderBackBtn').addEventListener('click', () => {
+  if (scaleBuilderPending) {
+    hideScaleBuilderPendingPanel();
+    return;
+  }
+  const list = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+  list.pop();
+  renderScaleBuilderNoteList();
+});
+
+// 確定済みの音符一覧（テキストリスト）と、入力中の音数の表示を更新する
+function renderScaleBuilderNoteList() {
+  const list = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+  document.getElementById('scaleBuilderNoteList').innerHTML = list.map(n => {
+    const noteData = scalesData.notes[n.note];
+    return `<li>${noteData.label}（${n.note}） − ${n.string}・${n.position}${n.turn ? '<span class="turn-mark">◀折り返し</span>' : ''}</li>`;
+  }).join('');
+
+  const count     = list.length;
+  const phaseText = scaleBuilderPhase === 'arpeggio' ? 'アルペジオ' : '音階';
+  document.getElementById('scaleBuilderPhaseLabel').textContent = `${phaseText}を入力中（${count}音）`;
+}
+
+// 「入力を完了する」：音階の入力ならアルペジオを追加するか尋ね、アルペジオの入力ならそのまま保存する
+document.getElementById('scaleBuilderFinishBtn').addEventListener('click', () => {
+  const errorEl = document.getElementById('scaleBuilderError');
+  errorEl.style.display = 'none';
+
+  const list = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+  if (list.length < 2) {
+    errorEl.textContent = '音符を2つ以上入力してください';
+    errorEl.style.display = 'block';
+    return;
+  }
+  hideScaleBuilderPendingPanel();
+
+  if (scaleBuilderPhase === 'notes') {
+    document.getElementById('scaleBuilderInput').style.display = 'none';
+    document.getElementById('scaleBuilderArpeggioAsk').style.display = 'block';
+  } else {
+    saveScaleBuilderResult();
+  }
+});
+
+document.getElementById('scaleBuilderArpeggioYesBtn').addEventListener('click', () => {
+  scaleBuilderPhase = 'arpeggio';
+  // scaleBuilderArpeggio はここでは空にしない：新規追加ならもともと空、
+  // 音階一覧からの「修正」で既存のアルペジオを読み込んでいた場合はそれを引き継いで編集を続けられるようにする
+  document.getElementById('scaleBuilderArpeggioAsk').style.display = 'none';
+  document.getElementById('scaleBuilderInput').style.display = 'block';
+  renderScaleBuilderNoteList();
+  hideScaleBuilderPendingPanel();
+});
+
+document.getElementById('scaleBuilderArpeggioNoBtn').addEventListener('click', saveScaleBuilderResult);
+
+document.getElementById('scaleBuilderCancelBtn').addEventListener('click', () => {
+  if (!confirm('入力中の内容を取り消しますか？')) return;
+  resetScaleBuilder();
+});
+
+// カテゴリー・調の名前・入力してきた音符（・アルペジオ）をまとめてサーバーに送る。
+// 音階一覧の「修正」から来ていれば更新(PUT)、それ以外は新規追加(POST)
+async function saveScaleBuilderResult() {
+  const errorEl   = document.getElementById('scaleBuilderError');
+  const successEl = document.getElementById('scaleBuilderSuccess');
+  errorEl.style.display   = 'none';
+  successEl.style.display = 'none';
+
+  const categoryKey = document.getElementById('scaleBuilderCategory').value;
+  const name        = document.getElementById('scaleBuilderName').value.trim();
+  const arpeggio     = scaleBuilderArpeggio.length > 0 ? scaleBuilderArpeggio : null;
+
+  const wasEditing = scaleBuilderEditingId !== null;
+  try {
+    if (scaleBuilderEditingId) {
+      await updateScale(scaleBuilderEditingId, categoryKey, name, scaleBuilderNotes, arpeggio);
+      successEl.textContent = `「${name}」を修正しました`;
+    } else {
+      await createScale(categoryKey, name, scaleBuilderNotes, arpeggio);
+      successEl.textContent = `「${name}」を追加しました`;
+    }
+    successEl.style.display = 'block';
+    await loadScales(); // 練習タブ・デモタブの調セレクトに、変更をすぐ反映する
+    resetScaleBuilder();
+    // 音階一覧の「修正」から来た場合は、結果を確認できるよう一覧に戻して更新しておく
+    if (wasEditing) {
+      document.getElementById('scaleListCard').style.display = 'block';
+      await renderScaleList();
+    }
+  } catch (err) {
+    document.getElementById('scaleBuilderArpeggioAsk').style.display = 'none';
+    document.getElementById('scaleBuilderInput').style.display = 'block';
+    errorEl.textContent   = err.message;
+    errorEl.style.display = 'block';
+  }
+}
+
+// 「音符の入力を始める」：カテゴリー・調の名前を確定し、入力ステップへ進む
+document.getElementById('scaleBuilderStartBtn').addEventListener('click', () => {
+  const errorEl = document.getElementById('scaleBuilderSetupError');
+  errorEl.style.display = 'none';
+  const name = document.getElementById('scaleBuilderName').value.trim();
+  if (!name) {
+    errorEl.textContent   = '調の名前を入力してください';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  scaleBuilderEditingId = null;
+  scaleBuilderPhase     = 'notes';
+  scaleBuilderNotes     = [];
+  scaleBuilderArpeggio  = [];
+
+  document.getElementById('scaleBuilderSetup').style.display = 'none';
+  document.getElementById('scaleBuilderArpeggioAsk').style.display = 'none';
+  document.getElementById('scaleBuilderInput').style.display = 'block';
+  document.getElementById('scaleBuilderCancelBtn').style.display = 'block';
+  renderScaleBuilderGuides();
+  renderScaleBuilderNoteList();
+  hideScaleBuilderPendingPanel();
+});
+
+// 音階一覧の「修正」ボタンから呼ばれる：既存の音階の内容を読み込み、入力ステップへ直接進む
+function startScaleBuilderEdit(id, categoryKey, scale) {
+  scaleBuilderEditingId = id;
+  scaleBuilderPhase     = 'notes';
+  scaleBuilderNotes     = scale.notes.map(n => ({ ...n }));
+  scaleBuilderArpeggio  = scale.arpeggio ? scale.arpeggio.map(n => ({ ...n })) : [];
+
+  document.getElementById('scaleBuilderCategory').value = categoryKey;
+  document.getElementById('scaleBuilderName').value     = scale.name;
+
+  document.getElementById('scaleListCard').style.display = 'none';
+  document.getElementById('scaleBuilderSetup').style.display = 'none';
+  document.getElementById('scaleBuilderArpeggioAsk').style.display = 'none';
+  document.getElementById('scaleBuilderInput').style.display = 'block';
+  document.getElementById('scaleBuilderCancelBtn').style.display = 'block';
+  renderScaleBuilderGuides();
+  renderScaleBuilderNoteList();
+  hideScaleBuilderPendingPanel();
+
+  document.getElementById('scaleBuilderCard').scrollIntoView({ block: 'start' });
+}
+
+// 保存・取り消しのあと、フォーム全体を最初の状態（カテゴリー・調の名前入力）に戻す
+function resetScaleBuilder() {
+  scaleBuilderEditingId = null;
+  scaleBuilderPhase     = null;
+  scaleBuilderNotes     = [];
+  scaleBuilderArpeggio  = [];
+  hideScaleBuilderPendingPanel();
+  document.getElementById('scaleBuilderName').value = '';
+  document.getElementById('scaleBuilderInput').style.display = 'none';
+  document.getElementById('scaleBuilderArpeggioAsk').style.display = 'none';
+  document.getElementById('scaleBuilderCancelBtn').style.display = 'none';
+  document.getElementById('scaleBuilderSetup').style.display = 'block';
+}
+
+// 「📋 音階一覧を見る」ボタン：一覧の表示・非表示を切り替える
+document.getElementById('scaleListToggleBtn').addEventListener('click', async () => {
+  const card = document.getElementById('scaleListCard');
+  if (card.style.display === 'block') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  await renderScaleList();
+});
+
+// カテゴリーごとに音階一覧を描画し、各行に「修正」「削除」ボタンを付ける
+async function renderScaleList() {
+  const res = await fetch('/api/scales'); // 常に最新の状態を取り直す
+  const { categories } = await res.json();
+  const content = document.getElementById('scaleListContent');
+
+  content.innerHTML = Object.entries(categories).map(([categoryKey, cat]) => {
+    const rows = Object.entries(cat.scales);
+    const rowsHtml = rows.length > 0
+      ? rows.map(([id, scale]) => `
+        <div class="scale-list-row" data-scale-id="${id}" data-category-key="${categoryKey}">
+          <div>
+            <div class="scale-list-name">${escapeHtml(scale.name)}</div>
+            <div class="scale-list-meta">${scale.notes.length}音${scale.arpeggio ? '・アルペジオあり' : ''}</div>
+          </div>
+          <div class="scale-list-actions">
+            <button type="button" class="btn-secondary scale-list-edit-btn">修正</button>
+            <button type="button" class="btn-danger scale-list-delete-btn">削除</button>
+          </div>
+        </div>
+      `).join('')
+      : '<p class="scale-list-empty">まだ音階がありません</p>';
+
+    return `<div class="scale-list-category">
+      <h3>${escapeHtml(cat.label)}</h3>
+      ${rowsHtml}
+    </div>`;
+  }).join('');
+
+  content.querySelectorAll('.scale-list-edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const row         = e.target.closest('.scale-list-row');
+      const id          = row.dataset.scaleId;
+      const categoryKey = row.dataset.categoryKey;
+      startScaleBuilderEdit(id, categoryKey, categories[categoryKey].scales[id]);
+    });
+  });
+
+  content.querySelectorAll('.scale-list-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const row         = e.target.closest('.scale-list-row');
+      const id          = row.dataset.scaleId;
+      const categoryKey = row.dataset.categoryKey;
+      const scale       = categories[categoryKey].scales[id];
+      if (!confirm(`「${scale.name}」を削除しますか？この操作は取り消せません。`)) return;
+      try {
+        await deleteScale(id);
+        await loadScales(); // 練習タブ・デモタブの調セレクトから削除を反映する
+        await renderScaleList();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
 // 管理者が被験者用アカウントをその場で作成する。
 // /api/profiles は管理者からのリクエストだと自動ログインを行わない仕様になっているため、
 // 作成しても管理者自身のログイン状態はそのまま
@@ -1520,6 +1910,7 @@ async function onLoggedIn() {
   initDemoModeUI();
   initSubjectAccountCreation();
   initSignupSetting();
+  initScaleBuilder();
   await renderHistory();
   statsLoaded = false;
   switchTab('practice');
