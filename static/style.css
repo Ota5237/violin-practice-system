@@ -109,6 +109,7 @@ header .subtitle { font-size: 0.9rem; color: var(--text-secondary); margin-top: 
 .login-note { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.6; }
 .login-note-center { text-align: center; margin: 8px 0 0; }
 .login-error { color: var(--danger); font-size: 0.9rem; text-align: center; margin: -6px 0 10px; }
+.settings-success-msg { color: var(--success); font-size: 0.9rem; text-align: center; margin: -6px 0 10px; }
 
 input[type="text"], input[type="password"], input[type="number"] {
   width: 100%;
@@ -503,3 +504,9 @@ canvas { max-height: 260px; }
   font-size: 0.65rem; font-weight: bold; color: var(--bg-deep);
   background: var(--gold); border-radius: 20px; padding: 1px 8px; margin-left: 6px;
 }
+
+/* アカウント一覧：行をクリックすると、そのアカウントの履歴・統計を表示する */
+.account-row { cursor: pointer; transition: background 0.15s; }
+.account-row:hover { background: rgba(212,162,78,0.08); }
+.account-row.selected { background: rgba(212,162,78,0.18); }
+.account-row.selected td:first-child { box-shadow: inset 3px 0 0 var(--gold-bright); }

@@ -69,12 +69,15 @@ def init_db():
         conn.execute('''
             CREATE TABLE IF NOT EXISTS app_settings (
                 id                  INTEGER PRIMARY KEY CHECK (id = 1),
-                result_display_mode TEXT NOT NULL DEFAULT 'accuracy'
+                result_display_mode TEXT NOT NULL DEFAULT 'accuracy',
+                signup_enabled      TEXT NOT NULL DEFAULT 'yes'
             )
         ''')
         existing_settings_cols = {row[1] for row in conn.execute('PRAGMA table_info(app_settings)')}
         if 'result_display_mode' not in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings ADD COLUMN result_display_mode TEXT NOT NULL DEFAULT 'accuracy'")
+        if 'signup_enabled' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN signup_enabled TEXT NOT NULL DEFAULT 'yes'")
         if 'note_display_mode' in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings DROP COLUMN note_display_mode")
         conn.execute('''
@@ -220,17 +223,17 @@ def me():
         return jsonify({'error': 'not logged in'}), 401
     return jsonify(dict(profile)), 200
 
-# ===== アプリ全体の設定を取得（練習中の音符表示モードなど） =====
-# ログインしていないゲストの練習画面にも反映する必要があるため、誰でも読める
+# ===== アプリ全体の設定を取得（結果画面の表示形式、新規アカウント作成の可否など） =====
+# ログインしていないゲスト・ログイン画面にも反映する必要があるため、誰でも読める
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            'SELECT result_display_mode FROM app_settings WHERE id = 1'
+            'SELECT result_display_mode, signup_enabled FROM app_settings WHERE id = 1'
         ).fetchone()
     if row is None:
-        return jsonify({'result_display_mode': 'accuracy'})
+        return jsonify({'result_display_mode': 'accuracy', 'signup_enabled': 'yes'})
     return jsonify(dict(row))
 
 # ===== アプリ全体の設定を変更（管理者のみ）。渡された項目だけ更新する =====
@@ -248,6 +251,11 @@ def update_settings():
             return jsonify({'error': 'result_display_modeはaccuracy・score・bothのいずれかで指定してください'}), 400
         updates['result_display_mode'] = data['result_display_mode']
 
+    if 'signup_enabled' in data:
+        if data['signup_enabled'] not in ('yes', 'no'):
+            return jsonify({'error': 'signup_enabledはyesかnoで指定してください'}), 400
+        updates['signup_enabled'] = data['signup_enabled']
+
     if not updates:
         return jsonify({'error': '更新する項目がありません'}), 400
 
@@ -257,7 +265,7 @@ def update_settings():
         conn.commit()
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            'SELECT result_display_mode FROM app_settings WHERE id = 1'
+            'SELECT result_display_mode, signup_enabled FROM app_settings WHERE id = 1'
         ).fetchone()
 
     return jsonify(dict(row)), 200
@@ -298,9 +306,16 @@ def get_profiles():
             ).fetchall()
     return jsonify([dict(row) for row in rows])
 
-# ===== アカウント新規作成（誰でも作成可。作成すると同時にログイン状態になる） =====
+# ===== アカウント新規作成 =====
+# 新規登録フォームからは、管理者が「新規アカウント作成」を許可している場合のみ作成可。
+# 作成すると同時にログイン状態になる。
+# ただし、既に管理者としてログイン中のリクエストは「被験者アカウントの代理作成」とみなし、
+# signup_enabledの設定に関係なく常に作成を許可し、管理者自身のログイン状態は変えない
+# （作成した被験者アカウントには自動ログインしない）
 @app.route('/api/profiles', methods=['POST'])
 def create_profile():
+    is_admin_request = session.get('role') == 'admin'
+
     data     = request.get_json() or {}
     name     = (data.get('name') or '').strip()
     password = data.get('password') or ''
@@ -308,6 +323,12 @@ def create_profile():
         return jsonify({'error': '名前を入力してください'}), 400
     if len(password) < 4:
         return jsonify({'error': 'パスワードは4文字以上で入力してください'}), 400
+
+    if not is_admin_request:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute('SELECT signup_enabled FROM app_settings WHERE id = 1').fetchone()
+        if row is not None and row[0] == 'no':
+            return jsonify({'error': '新規アカウント作成は現在許可されていません'}), 403
 
     created_at = datetime.now().strftime('%Y/%m/%d %H:%M')
     try:
@@ -321,10 +342,11 @@ def create_profile():
     except sqlite3.IntegrityError:
         return jsonify({'error': 'その名前は既に使われています'}), 409
 
-    session.clear()
-    session.permanent = True
-    session['profile_id'] = profile_id
-    session['role']       = 'user'
+    if not is_admin_request:
+        session.clear()
+        session.permanent = True
+        session['profile_id'] = profile_id
+        session['role']       = 'user'
     return jsonify({'id': profile_id, 'name': name, 'role': 'user', 'created_at': created_at}), 201
 
 # ===== アカウント削除（本人か管理者のみ） =====
@@ -516,29 +538,6 @@ def get_note_stats():
         'by_note':   [dict(r) for r in by_note],
         'by_string': [dict(r) for r in by_string]
     })
-
-# ===== 全アカウントの比較統計（管理者のみ） =====
-@app.route('/api/stats/compare', methods=['GET'])
-@login_required
-def get_compare_stats():
-    if session.get('role') != 'admin':
-        return jsonify({'error': '権限がありません'}), 403
-
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute('''
-            SELECT
-                p.id, p.name, p.role,
-                COUNT(h.id) as count,
-                ROUND(AVG(CASE WHEN h.mode = 'tempo' THEN h.accuracy END), 1) as avg_accuracy,
-                MAX(h.practiced_at) as last_practiced_at
-            FROM profiles p
-            LEFT JOIN history h ON h.profile_id = p.id
-            GROUP BY p.id
-            ORDER BY p.id
-        ''').fetchall()
-
-    return jsonify([dict(r) for r in rows])
 
 if __name__ == '__main__':
     init_db()

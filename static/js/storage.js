@@ -102,12 +102,6 @@ async function getNoteStats(profileId) {
   return await res.json();
 }
 
-// 全アカウントの比較統計（管理者のみ）
-async function getCompareStats() {
-  const res = await apiFetch('/api/stats/compare');
-  return await res.json();
-}
-
 // 結果画面の表示形式など、アプリ全体の設定。
 // ログイン不要（ゲストの練習画面にも必要なため）
 async function getSettings() {

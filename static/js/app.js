@@ -43,6 +43,8 @@ let currentIndex    = 0;  // practiceNotes のうち、今どの音を練習中�
 let isPracticing    = false; // 今マイクの判定結果を受け付けてよいか（判定中の二重反応を防ぐ）
 let currentProfileId = null; // 選択中のプロフィール（ユーザー）のID
 let resultDisplayMode = 'accuracy'; // 結果画面の表示：'accuracy'=正答率／'score'=カラオケ風の点数／'both'=両方（管理者が設定を切り替える）
+let isDemoRun = false; // 今進行中の練習が「デモ開始」から始まったものかどうか（記録の保存要否・もう一回の挙動を分けるのに使う）
+let signupEnabled = 'yes'; // ログイン画面から新規アカウント作成を許可するか：'yes'/'no'（管理者が設定を切り替える）
 
 // テンポモード用
 let tempoInterval  = null; // メトロノームのsetInterval ID（stopPractice等で止めるために保持）
@@ -137,7 +139,18 @@ function splitScaleNotes(scale) {
   };
 }
 
-// ===== 練習開始 =====
+// カテゴリー・調・練習タイプ（direction）から、今回弾く音の並びを組み立てる。
+// 通常の練習開始（startPractice）とデモ開始（startDemo）の両方から使う共通処理
+function buildPracticeNotes(scaleKey, direction) {
+  const scale = getCurrentScales()[scaleKey];
+  const { up, down, updown } = splitScaleNotes(scale);
+  if (direction === 'up')       return up;
+  if (direction === 'down')     return down;
+  if (direction === 'updown')   return updown;
+  if (direction === 'arpeggio') return [...scale.arpeggio];
+}
+
+// ===== 練習開始（マイクを使った通常の練習） =====
 // 「開始」ボタンで呼ばれる。フォームの選択内容（音階・方向・モード）を読み取り、
 // 練習する音の並び(practiceNotes)を組み立ててから、モードに応じて
 // startStepMode() か startTempoMode() を開始する。
@@ -145,21 +158,16 @@ function startPractice() {
   const scaleKey  = document.getElementById('scaleSelect').value;
   const direction = document.querySelector('input[name="direction"]:checked').value;
   const mode      = document.querySelector('input[name="mode"]:checked').value;
-  const scale     = getCurrentScales()[scaleKey];
 
-  // 音リストを組み立て
-  const { up, down, updown } = splitScaleNotes(scale);
-
-  if      (direction === 'up')      practiceNotes = up;
-  else if (direction === 'down')    practiceNotes = down;
-  else if (direction === 'updown')  practiceNotes = updown;
-  else if (direction === 'arpeggio')practiceNotes = [...scale.arpeggio];
+  practiceNotes = buildPracticeNotes(scaleKey, direction);
 
   currentIndex = 0;
   notesCorrect = 0;
   practiceResults = [];
   currentNoteMissed = false;
   showCurrentGlow = true; // 1音ずつモードは最初から光らせる。テンポモードはstartTempoMode()内で制御する
+  activeSource = detector; // 通常の練習は常に実マイクを使う（デモモードのシミュレート音とは入り口を分けてある）
+  isDemoRun = false;
 
   document.getElementById('setupCard').style.display    = 'none';
   document.getElementById('practiceCard').style.display = 'block';
@@ -175,6 +183,38 @@ function startPractice() {
   } else {
     startTempoMode();
   }
+}
+
+// ===== デモ開始（管理者用。マイクの代わりにシミュレートしたピッチ源でテンポモードを実行する） =====
+// 「デモ開始」ボタンで呼ばれる。練習設定で選んだカテゴリー・調・練習タイプはそのまま使い、
+// テンポ・ズレ幅・ばらつき・無音確率はデモモードカード側の設定を使う
+function startDemo() {
+  const scaleKey  = document.getElementById('scaleSelect').value;
+  const direction = document.querySelector('input[name="direction"]:checked').value;
+
+  practiceNotes = buildPracticeNotes(scaleKey, direction);
+
+  currentIndex = 0;
+  notesCorrect = 0;
+  practiceResults = [];
+  currentNoteMissed = false;
+  activeSource = new DemoPitchSource({
+    offsetCents:   parseFloat(document.getElementById('demoOffsetCents').value) || 0,
+    jitterCents:   parseFloat(document.getElementById('demoJitterCents').value) || 0,
+    silenceChance: parseFloat(document.getElementById('demoSilenceChance').value) || 0,
+  });
+  isDemoRun = true;
+
+  switchTab('practice'); // 練習画面(#practiceCard)は「練習」タブの中にあるため、デモタブから開始したらそちらに戻る
+  document.getElementById('setupCard').style.display    = 'none';
+  document.getElementById('practiceCard').style.display = 'block';
+  document.getElementById('completeCard').style.display = 'none';
+
+  const demoBpm = document.getElementById('demoBpmRange').value;
+  document.getElementById('modeBadge').textContent = `🎬 デモ・テンポモード ${demoBpm} BPM`;
+
+  renderNoteTrack();
+  startTempoMode(parseInt(demoBpm));
 }
 
 // ===========================
@@ -230,9 +270,10 @@ function onPitchDetectedStep(freq) {
 //  正解を待たずに拍ごとに強制的に次の音へ進む）
 // ===========================
 // BPM（1分間の拍数）からメトロノームの間隔を計算し、
-// カウントダウン→本番のメトロノーム開始、という流れを組み立てる
-function startTempoMode() {
-  const bpm      = parseInt(document.getElementById('bpmRange').value);
+// カウントダウン→本番のメトロノーム開始、という流れを組み立てる。
+// bpmOverride が渡された場合はそちらを使う（デモ開始時、デモ側のBPM設定を使うため）
+function startTempoMode(bpmOverride) {
+  const bpm      = bpmOverride ?? parseInt(document.getElementById('bpmRange').value);
   const interval = (60 / bpm) * 1000;
   let beat       = 0;
   let countdown  = 3;
@@ -250,13 +291,8 @@ function startTempoMode() {
   // 電子メトロノームのようにテンポを目で見て分かりやすくするビートライトを表示する
   document.getElementById('metronomeBar').style.display = 'flex';
 
-  // 管理者がデモモードを有効にしていれば、マイクの代わりにシミュレートしたピッチ源を使う
-  const demoEnabled = currentUser?.role === 'admin' && document.getElementById('demoModeEnabled').checked;
-  activeSource = demoEnabled ? new DemoPitchSource({
-    offsetCents:   parseFloat(document.getElementById('demoOffsetCents').value) || 0,
-    jitterCents:   parseFloat(document.getElementById('demoJitterCents').value) || 0,
-    silenceChance: parseFloat(document.getElementById('demoSilenceChance').value) || 0,
-  }) : detector;
+  // activeSource は呼び出し元（startPractice / startDemo）が事前に設定済み
+  // （実マイクかデモのシミュレート音か、ここでは判断しない）
 
   // マイク（またはデモモードのシミュレート音）を起動し、常時聴いておく
   activeSource.start((freq) => {
@@ -756,8 +792,11 @@ async function completePractice() {
 
   const scaleKey  = document.getElementById('scaleSelect').value;
   const direction = document.querySelector('input[name="direction"]:checked').value;
-  const mode      = document.querySelector('input[name="mode"]:checked').value;
-  const bpm       = mode === 'tempo' ? parseInt(document.getElementById('bpmRange').value) : null;
+  // デモ実行は練習設定の「練習モード」ラジオに関係なく常にテンポモード扱い
+  const mode      = isDemoRun ? 'tempo' : document.querySelector('input[name="mode"]:checked').value;
+  const bpm       = mode === 'tempo'
+    ? parseInt(document.getElementById(isDemoRun ? 'demoBpmRange' : 'bpmRange').value)
+    : null;
 
   const dirLabels = { up: '上行', down: '下行', updown: '上下', arpeggio: 'アルペジオ' };
   const dirLabel  = dirLabels[direction] || direction;
@@ -766,8 +805,12 @@ async function completePractice() {
     ? Math.round(notesCorrect / practiceNotes.length * 100) : 0;
   const karaokeScore = computeKaraokeScore(practiceResults);
 
-  // ゲストモードでは記録を一切保存しない（ログインしていないので保存先のアカウントが無い）
-  if (!isGuest) {
+  // ゲストモードでは記録を一切保存しない（ログインしていないので保存先のアカウントが無い）。
+  // デモ実行は「この結果を記録に残すか」で「記録する」が選ばれていない限り保存しない
+  // （デモはマイク無しのシミュレーションなので、実際の練習記録に混ざらないようにする）
+  const demoWantsSave = !isDemoRun ||
+    document.querySelector('input[name="demoSaveHistory"]:checked').value === 'yes';
+  if (!isGuest && demoWantsSave) {
     // profile_idは送らない。誰の記録として保存するかはサーバー側で
     // ログイン中の本人アカウントに固定しているため（他人になりすまして記録できないように）
     const entry = await saveHistory({
@@ -945,6 +988,7 @@ function stopPractice() {
   document.getElementById('completeCard').style.display = 'none';
   document.getElementById('countdown').style.display    = 'none';
   document.getElementById('metronomeBar').style.display = 'none';
+  initDemoModeUI(); // 管理者なら「デモ」タブも念のため再表示しておく
 }
 
 // サーバーから返ってきた履歴1件を、画面下の履歴リストの先頭に追加する
@@ -976,54 +1020,57 @@ async function renderHistory() {
 // ===========================
 // グラフ描画（統計タブ、Chart.js を使用）
 // ===========================
-const charts = { accuracy: null, daily: null, scale: null, notes: null, strings: null, compare: null }; // 描画済みのChartインスタンスを保持（再描画時に破棄するため）
+const charts = { accuracy: null, daily: null, scale: null, notes: null, strings: null }; // 描画済みのChartインスタンスを保持（再描画時に破棄するため）
 
-// 【管理者用】全アカウントの練習回数・平均正答率・最終練習日を一覧表にし、
-// 正答率をグラフでも比較できるようにする
-async function renderCompareStats() {
-  document.getElementById('compareCard').style.display = 'block';
+// 文字列をHTMLとして安全に埋め込めるようにエスケープする（アカウント名はユーザー入力のため）
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
 
-  const rows = await getCompareStats();
+// 【管理者用】全アカウントの一覧（ID・名前・権限・作成日）を表示する。
+// 行をクリックすると、そのアカウントの履歴・統計を下の各カードに表示する
+async function renderAccountList() {
+  document.getElementById('accountListCard').style.display = 'block';
 
-  document.getElementById('compareTableBody').innerHTML = rows.map(r => `
-    <tr>
-      <td>${r.name}${r.role === 'admin' ? '<span class="compare-role-badge">管理者</span>' : ''}</td>
-      <td>${r.count}</td>
-      <td>${r.avg_accuracy != null ? r.avg_accuracy + '%' : '−'}</td>
-      <td>${r.last_practiced_at || '−'}</td>
+  const profiles = await getProfiles();
+  document.getElementById('accountListTableBody').innerHTML = profiles.map(p => `
+    <tr class="account-row${p.id === currentProfileId ? ' selected' : ''}" data-profile-id="${p.id}">
+      <td>${p.id}</td>
+      <td>${escapeHtml(p.name)}</td>
+      <td>${p.role === 'admin' ? '<span class="compare-role-badge">管理者</span>' : '一般'}</td>
+      <td>${p.created_at}</td>
     </tr>
   `).join('');
 
-  // 平均正答率が出せるのはテンポモードの記録があるアカウントだけなので、それだけを棒グラフにする
-  const withAccuracy = rows.filter(r => r.avg_accuracy != null);
-  document.getElementById('chartCompare').style.display      = withAccuracy.length > 0 ? 'block' : 'none';
-  document.getElementById('chartCompareEmpty').style.display = withAccuracy.length > 0 ? 'none'  : 'block';
-
-  charts.compare?.destroy();
-  if (withAccuracy.length > 0) {
-    const compareCtx = document.getElementById('chartCompare').getContext('2d');
-    charts.compare = new Chart(compareCtx, {
-      type: 'bar',
-      data: {
-        labels: withAccuracy.map(r => r.name),
-        datasets: [{
-          label: '平均正答率 (%)',
-          data: withAccuracy.map(r => r.avg_accuracy),
-          backgroundColor: 'rgba(232,196,104,0.75)',
-          borderRadius: 6
-        }]
-      },
-      options: chartOptions('正答率 (%)', 0, 100)
+  document.querySelectorAll('#accountListTableBody .account-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      currentProfileId = parseInt(row.dataset.profileId, 10);
+      document.querySelectorAll('#accountListTableBody .account-row').forEach(r =>
+        r.classList.toggle('selected', r === row)
+      );
+      await renderHistory();
+      await renderStatsForCurrentProfile();
     });
-  }
+  });
 }
 
 // 統計データをサーバーから取得し、「正答率の推移」「日別練習回数」「調ごとの正答率」
 // 「苦手な音」「弦ごとの正答率」の5つのグラフを描画する（統計タブを開いたときに1回だけ呼ばれる）。
-// 管理者の場合は、あわせて全アカウントの比較セクションも描画する
+// 管理者の場合は、あわせて全アカウントの一覧も描画する
+// （アカウント同士の比較表示は廃止し、一覧から選んだ1アカウント分だけを表示する方式にした）
 async function renderStats() {
-  if (currentUser?.role === 'admin') await renderCompareStats();
+  if (currentUser?.role === 'admin') {
+    await renderAccountList();
+  }
+  await renderStatsForCurrentProfile();
+}
 
+// currentProfileId のアカウント分だけ、5つのグラフを描画し直す。
+// アカウント一覧の行をクリックして閲覧先を切り替えたときは、これだけを呼べば十分
+// （アカウント一覧・比較セクションまで作り直す必要は無いため）
+async function renderStatsForCurrentProfile() {
   const data     = await getStats(currentProfileId);
   const noteData = await getNoteStats(currentProfileId);
   const daily    = [...data.daily].reverse();
@@ -1146,23 +1193,27 @@ function chartOptions(yLabel, min, max, integer = false) {
 }
 
 // ===========================
-// タブ切り替え（「練習」タブと「統計」タブ）
+// タブ切り替え（「練習」「デモ」「記録」「設定」タブ）
 // ===========================
 let statsLoaded = false; // 統計タブを一度でも開いたか（毎回グラフを再取得しないようにするフラグ）
+
+// 指定したタブを表示し、他のタブ（と対応するナビボタンのactive状態）を切り替える。
+// ナビのクリックだけでなく、デモ開始のようにコード側から別タブへ切り替えたい場合にも使う
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('tab-practice').style.display = tab === 'practice' ? 'block' : 'none';
+  document.getElementById('tab-demo').style.display     = tab === 'demo'     ? 'block' : 'none';
+  document.getElementById('tab-stats').style.display    = tab === 'stats'    ? 'block' : 'none';
+  document.getElementById('tab-settings').style.display = tab === 'settings' ? 'block' : 'none';
+
+  if (tab === 'stats' && !statsLoaded) {
+    renderStats();
+    statsLoaded = true;
+  }
+}
+
 document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-
-    const tab = btn.dataset.tab;
-    document.getElementById('tab-practice').style.display = tab === 'practice' ? 'block' : 'none';
-    document.getElementById('tab-stats').style.display    = tab === 'stats'    ? 'block' : 'none';
-
-    if (tab === 'stats' && !statsLoaded) {
-      renderStats();
-      statsLoaded = true;
-    }
-  });
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
 // ===========================
@@ -1171,9 +1222,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // カテゴリーを変更したら、調セレクトの中身を作り直す
 document.getElementById('categorySelect').addEventListener('change', populateScaleSelect);
 
-// 調を選んだら「開始」ボタンを押せるようにする（未選択なら押せない）
+// 調を選んだら「開始」「デモ開始」ボタンを押せるようにする（未選択なら押せない）
 document.getElementById('scaleSelect').addEventListener('change', (e) => {
-  document.getElementById('startBtn').disabled = e.target.value === '';
+  document.getElementById('startBtn').disabled     = e.target.value === '';
+  document.getElementById('startDemoBtn').disabled = e.target.value === '';
 });
 
 // 「1音ずつ」/「テンポ」モードの切り替えで、BPM設定欄の表示・非表示を切り替える
@@ -1188,6 +1240,9 @@ document.querySelectorAll('input[name="mode"]').forEach(radio => {
 document.getElementById('bpmRange').addEventListener('input', (e) => {
   document.getElementById('bpmValue').textContent = e.target.value;
 });
+document.getElementById('demoBpmRange').addEventListener('input', (e) => {
+  document.getElementById('demoBpmValue').textContent = e.target.value;
+});
 
 // デモモードの「ズレ幅」スライダーを動かしたら、隣に表示している数値も更新する
 document.getElementById('demoOffsetCents').addEventListener('input', (e) => {
@@ -1198,6 +1253,7 @@ document.getElementById('demoToneCents').addEventListener('input', (e) => {
 });
 
 document.getElementById('startBtn').addEventListener('click', startPractice);
+document.getElementById('startDemoBtn').addEventListener('click', startDemo);
 document.getElementById('stopBtn').addEventListener('click', stopPractice);
 
 // 練習中の表示を「音符トラック」「指板」で切り替えるボタン
@@ -1216,10 +1272,13 @@ document.getElementById('retryBtn').addEventListener('click', () => {
   statsLoaded = false;
   document.getElementById('setupCard').style.display   = 'block';
   document.getElementById('completeCard').style.display = 'none';
+  initDemoModeUI(); // 管理者なら「デモ」タブも念のため再表示しておく
 });
 
-// 完了画面の「もう一回練習」ボタンで、設定画面に戻らず同じ設定のまま練習をやり直す
-document.getElementById('retryPracticeBtn').addEventListener('click', startPractice);
+// 完了画面の「もう一回練習」ボタンで、設定画面に戻らず同じ設定のまま練習（またはデモ）をやり直す
+document.getElementById('retryPracticeBtn').addEventListener('click', () => {
+  if (isDemoRun) startDemo(); else startPractice();
+});
 
 // 確認ダイアログを出したうえで、現在のプロフィールの履歴を全件削除する
 async function clearAllHistory() {
@@ -1241,6 +1300,15 @@ let isGuest     = false; // アカウントを作らず「ゲスト」として�
 function showLoginScreen() {
   document.getElementById('loginScreen').style.display = 'flex';
   document.getElementById('appRoot').style.display = 'none';
+  refreshSignupButtonVisibility();
+}
+
+// ログイン画面を表示するたび、管理者が「新規アカウント作成」を許可しているか最新の状態を取り直し、
+// 「新しいアカウントを作る」ボタンの表示・非表示に反映する
+async function refreshSignupButtonVisibility() {
+  const settings = await getSettings();
+  document.getElementById('showSignupBtn').style.display =
+    settings.signup_enabled === 'no' ? 'none' : '';
 }
 
 function showApp() {
@@ -1327,12 +1395,14 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   showLoginScreen();
 });
 
-// アプリ全体の設定（結果画面の表示形式）をサーバーから読み込み、resultDisplayMode に反映する。
+// アプリ全体の設定（結果画面の表示形式・新規アカウント作成の可否）をサーバーから読み込み、
+// resultDisplayMode / signupEnabled に反映する。
 // ゲストの画面にも反映する必要があるため、ログイン有無に関わらず呼ぶ
 async function loadAppSettings() {
   const settings = await getSettings();
   resultDisplayMode = ['score', 'both'].includes(settings.result_display_mode)
     ? settings.result_display_mode : 'accuracy';
+  signupEnabled = settings.signup_enabled === 'no' ? 'no' : 'yes';
 }
 
 // 管理者にだけ「結果画面の設定」カードを表示し、現在の設定をラジオボタンに反映する
@@ -1348,12 +1418,78 @@ function initResultDisplaySetting() {
   });
 }
 
-// 管理者にだけ「デモモード」カードを表示する（練習設定画面）。
+// 管理者にだけ「デモ」タブを表示する。
 // デモモードの値はサーバーには保存せず、他のユーザーには一切影響しない、その場限りの設定
 function initDemoModeUI() {
-  document.getElementById('demoModeCard').style.display =
+  document.getElementById('demoTabBtn').style.display =
+    (currentUser && currentUser.role === 'admin') ? '' : 'none';
+}
+
+// 管理者にだけ「被験者アカウント作成」カードを表示する（設定タブ）
+function initSubjectAccountCreation() {
+  document.getElementById('subjectAccountCard').style.display =
     (currentUser && currentUser.role === 'admin') ? 'block' : 'none';
 }
+
+// 管理者にだけ「新規アカウント作成」カードを表示し、現在の設定をラジオボタンに反映する
+function initSignupSetting() {
+  const card = document.getElementById('signupSettingCard');
+  if (!currentUser || currentUser.role !== 'admin') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  document.querySelectorAll('input[name="signupSetting"]').forEach(radio => {
+    radio.checked = radio.value === signupEnabled;
+  });
+}
+
+// 管理者が「新規アカウント作成」の許可・不許可を切り替えたら、サーバーに保存する
+// （反映はログイン画面を次に表示したときから。管理者自身の「被験者アカウント作成」には影響しない）
+document.querySelectorAll('input[name="signupSetting"]').forEach(radio => {
+  radio.addEventListener('change', async (e) => {
+    const errorEl = document.getElementById('signupSettingError');
+    errorEl.style.display = 'none';
+    try {
+      await updateSettings({ signup_enabled: e.target.value });
+      signupEnabled = e.target.value;
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.style.display = 'block';
+      initSignupSetting(); // 失敗したら選択状態を元に戻す
+    }
+  });
+});
+
+// 管理者が被験者用アカウントをその場で作成する。
+// /api/profiles は管理者からのリクエストだと自動ログインを行わない仕様になっているため、
+// 作成しても管理者自身のログイン状態はそのまま
+document.getElementById('createSubjectAccountBtn').addEventListener('click', async () => {
+  const errorEl   = document.getElementById('subjectAccountError');
+  const successEl = document.getElementById('subjectAccountSuccess');
+  errorEl.style.display   = 'none';
+  successEl.style.display = 'none';
+
+  const name     = document.getElementById('subjectName').value.trim();
+  const password = document.getElementById('subjectPassword').value;
+  if (!name) {
+    errorEl.textContent   = '名前を入力してください';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  try {
+    const created = await createProfile(name, password);
+    document.getElementById('subjectName').value     = '';
+    document.getElementById('subjectPassword').value = '';
+    successEl.textContent   = `「${created.name}」を作成しました`;
+    successEl.style.display = 'block';
+    await renderAccountList(); // 記録タブのアカウント一覧にも反映する
+  } catch (err) {
+    errorEl.textContent   = err.message;
+    errorEl.style.display = 'block';
+  }
+});
 
 // 管理者が結果画面の表示形式を切り替えたら、サーバーに保存する（反映は次回の結果画面から）
 document.querySelectorAll('input[name="resultDisplaySetting"]').forEach(radio => {
@@ -1382,12 +1518,11 @@ async function onLoggedIn() {
   await loadAppSettings();
   initResultDisplaySetting();
   initDemoModeUI();
-  await initProfileViewer();
+  initSubjectAccountCreation();
+  initSignupSetting();
   await renderHistory();
   statsLoaded = false;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'practice'));
-  document.getElementById('tab-practice').style.display = 'block';
-  document.getElementById('tab-stats').style.display    = 'none';
+  switchTab('practice');
   renderFingerboardTicks();
 }
 
@@ -1410,18 +1545,17 @@ document.getElementById('guestBtn').addEventListener('click', async () => {
   document.getElementById('profileName').textContent = '';
   document.getElementById('roleBadge').textContent   = 'ゲスト';
   document.getElementById('roleBadge').style.display = 'inline-block';
-  document.getElementById('adminViewSelect').style.display = 'none';
   document.getElementById('logoutBtn').textContent = '🚪 ログイン画面に戻る';
   document.getElementById('logoutBtn').title = 'ログイン画面に戻る';
-  document.getElementById('statsTabBtn').style.display  = 'none';
+  document.getElementById('demoTabBtn').style.display    = 'none';
+  document.getElementById('statsTabBtn').style.display    = 'none';
+  document.getElementById('settingsTabBtn').style.display = 'none';
   document.getElementById('historySection').style.display = 'none';
   document.getElementById('guestNote').style.display = 'block';
 
   await loadScales();
   await loadAppSettings();
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'practice'));
-  document.getElementById('tab-practice').style.display = 'block';
-  document.getElementById('tab-stats').style.display    = 'none';
+  switchTab('practice');
   renderFingerboardTicks();
 });
 
@@ -1431,34 +1565,10 @@ function resetGuestUI() {
   document.getElementById('logoutBtn').textContent = '🚪 ログアウト';
   document.getElementById('logoutBtn').title = 'ログアウト';
   document.getElementById('statsTabBtn').style.display   = '';
+  document.getElementById('settingsTabBtn').style.display = '';
   document.getElementById('historySection').style.display = '';
   document.getElementById('guestNote').style.display = 'none';
 }
-
-// ===========================
-// プロフィール閲覧（管理者は他のアカウントのデータも選んで見られる）
-// ===========================
-// 管理者用：全アカウント分のセレクトボックスを用意する（一般ユーザーには表示しない）
-async function initProfileViewer() {
-  const select = document.getElementById('adminViewSelect');
-  if (currentUser.role !== 'admin') {
-    select.style.display = 'none';
-    return;
-  }
-  const profiles = await getProfiles();
-  select.innerHTML = profiles.map(p =>
-    `<option value="${p.id}" ${p.id === currentProfileId ? 'selected' : ''}>${p.name}${p.role === 'admin' ? '（管理者）' : ''}</option>`
-  ).join('');
-  select.style.display = 'inline-block';
-}
-
-// 管理者が閲覧先のアカウントを切り替えたら、履歴・統計を読み込み直す
-// （自分の練習記録は常に自分のアカウントに保存されるため、これは「閲覧」だけに影響する）
-document.getElementById('adminViewSelect').addEventListener('change', async (e) => {
-  currentProfileId = parseInt(e.target.value, 10);
-  await renderHistory();
-  if (statsLoaded) await renderStats();
-});
 
 // ===========================
 // アカウント設定（パスワード変更・アカウント削除）
