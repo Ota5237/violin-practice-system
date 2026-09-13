@@ -184,13 +184,19 @@ function startPractice() {
   document.getElementById('practiceCard').style.display = 'block';
   document.getElementById('completeCard').style.display = 'none';
 
-  const badge = document.getElementById('modeBadge');
-  badge.textContent = mode === 'step' ? '🎯 1音ずつモード' : `🥁 テンポモード ${document.getElementById('bpmRange').value} BPM`;
+  const bpmText = document.getElementById('bpmRange').value;
+  const badge   = document.getElementById('modeBadge');
+  badge.textContent =
+    mode === 'step'      ? '🎯 1音ずつモード' :
+    mode === 'listening' ? `🎧 リスニングモード ${bpmText} BPM` :
+    `🥁 テンポモード ${bpmText} BPM`;
 
   renderNoteTrack();
 
   if (mode === 'step') {
     startStepMode();
+  } else if (mode === 'listening') {
+    startListeningMode();
   } else {
     startTempoMode();
   }
@@ -358,6 +364,82 @@ function startTempoMode(bpmOverride) {
       }, interval);
     }
   }, interval);
+}
+
+// ===========================
+// リスニングモード
+// （マイクは使わず、選んだ音階の正しい音を、テンポに合わせて順番に鳴らして聴くだけのモード。
+//  判定は行わないため、練習記録にも保存しない）
+// ===========================
+let listeningTimer = null; // 次の音を鳴らすsetTimeout ID（stopPractice等で止めるために保持）
+
+function startListeningMode() {
+  const bpm      = parseInt(document.getElementById('bpmRange').value);
+  const interval = (60 / bpm) * 1000;
+  let countdown  = 3;
+
+  isPracticing = false; // マイクを使わないので、判定（正解/不正解）は行わない
+  currentIndex = 0;
+  showCurrentGlow = false; // カウントダウン中は「今弾く音」を光らせない。再生が始まる瞬間に光るようにする
+  showCurrentNote();
+
+  const playNext = () => {
+    if (currentIndex >= practiceNotes.length) {
+      completePractice();
+      return;
+    }
+    showCurrentNote();
+    const noteData = scalesData.notes[practiceNotes[currentIndex].note];
+    playListeningTone(noteData.freq, (interval / 1000) * 0.85); // 次の音と少し間が空くよう、拍の長さより短めに鳴らす
+
+    listeningTimer = setTimeout(() => {
+      currentIndex++;
+      playNext();
+    }, interval);
+  };
+
+  // カウントダウン（3・2・1と数えて、本番の再生を始める。テンポモードと同じ仕組み）
+  const countdownEl = document.getElementById('countdown');
+  countdownEl.style.display = 'block';
+  countdownEl.textContent = countdown;
+  playClick(true); // 「3」の合図
+
+  countTimer = setInterval(() => {
+    countdown--;
+    if (countdown > 0) {
+      countdownEl.textContent = countdown;
+      playClick(true);
+    } else {
+      clearInterval(countTimer);
+      countTimer = null;
+      countdownEl.style.display = 'none';
+      showCurrentGlow = true; // ここで初めて「今弾く音」を光らせる
+      playNext();
+    }
+  }, interval);
+}
+
+// リスニングモード用：指定した周波数の音を、指定した長さ(秒)だけ鳴らす（音源はセント調整デモと同じ正弦波）
+function playListeningTone(freq, durationSec) {
+  try {
+    const ctx  = getClickAudioCtx();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+
+    const now      = ctx.currentTime;
+    const fadeOutAt = Math.max(now + 0.03, now + durationSec - 0.05);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + 0.03);
+    gain.gain.setValueAtTime(0.3, fadeOutAt);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+    osc.start(now);
+    osc.stop(now + durationSec);
+  } catch (e) {}
 }
 
 // 電子メトロノームのビートライトを1拍分光らせる。
@@ -821,10 +903,11 @@ async function completePractice() {
 
   // ゲストモードでは記録を一切保存しない（ログインしていないので保存先のアカウントが無い）。
   // デモ実行は「この結果を記録に残すか」で「記録する」が選ばれていない限り保存しない
-  // （デモはマイク無しのシミュレーションなので、実際の練習記録に混ざらないようにする）
+  // （デモはマイク無しのシミュレーションなので、実際の練習記録に混ざらないようにする）。
+  // リスニングモードはそもそも判定を行っていないので、一切保存しない
   const demoWantsSave = !isDemoRun ||
     document.querySelector('input[name="demoSaveHistory"]:checked').value === 'yes';
-  if (!isGuest && demoWantsSave) {
+  if (!isGuest && demoWantsSave && mode !== 'listening') {
     // profile_idは送らない。誰の記録として保存するかはサーバー側で
     // ログイン中の本人アカウントに固定しているため（他人になりすまして記録できないように）
     const entry = await saveHistory({
@@ -994,8 +1077,9 @@ function renderResultDetail(mode) {
 function stopPractice() {
   activeSource.stop();
   isPracticing = false;
-  if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
-  if (countTimer)    { clearInterval(countTimer);    countTimer = null; }
+  if (tempoInterval)  { clearInterval(tempoInterval); tempoInterval = null; }
+  if (countTimer)     { clearInterval(countTimer);    countTimer = null; }
+  if (listeningTimer) { clearTimeout(listeningTimer); listeningTimer = null; }
   clearMetronomeVisual();
   document.getElementById('setupCard').style.display    = 'block';
   document.getElementById('practiceCard').style.display = 'none';
@@ -1215,15 +1299,19 @@ let statsLoaded = false; // 統計タブを一度でも開いたか（毎回グ�
 // ナビのクリックだけでなく、デモ開始のようにコード側から別タブへ切り替えたい場合にも使う
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.getElementById('tab-practice').style.display = tab === 'practice' ? 'block' : 'none';
-  document.getElementById('tab-demo').style.display     = tab === 'demo'     ? 'block' : 'none';
-  document.getElementById('tab-stats').style.display    = tab === 'stats'    ? 'block' : 'none';
-  document.getElementById('tab-settings').style.display = tab === 'settings' ? 'block' : 'none';
+  // 表示する側は空文字にして、CSSの.tab-content（display:flex）に任せる
+  // （'block'を指定するとインラインstyleがCSSのdisplay:flexを上書きしてしまい、タブ内の余白が効かなくなるため）
+  document.getElementById('tab-practice').style.display = tab === 'practice' ? '' : 'none';
+  document.getElementById('tab-demo').style.display     = tab === 'demo'     ? '' : 'none';
+  document.getElementById('tab-verify').style.display   = tab === 'verify'   ? '' : 'none';
+  document.getElementById('tab-stats').style.display    = tab === 'stats'    ? '' : 'none';
+  document.getElementById('tab-settings').style.display = tab === 'settings' ? '' : 'none';
 
   if (tab === 'stats' && !statsLoaded) {
     renderStats();
     statsLoaded = true;
   }
+  if (tab !== 'verify') { stopTuner(); stopFFT(); } // 検証タブから離れたら、マイクを起動したままにしない
 }
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -1245,11 +1333,12 @@ document.getElementById('demoScaleSelect').addEventListener('change', (e) => {
   document.getElementById('startDemoBtn').disabled = e.target.value === '';
 });
 
-// 「1音ずつ」/「テンポ」モードの切り替えで、BPM設定欄の表示・非表示を切り替える
+// 「テンポ」「リスニング」モードの切り替えで、BPM設定欄の表示・非表示を切り替える
+// （どちらも一定のテンポで進むモードなので、同じBPM欄を共用する）
 document.querySelectorAll('input[name="mode"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
     document.getElementById('bpmGroup').style.display =
-      e.target.value === 'tempo' ? 'block' : 'none';
+      (e.target.value === 'tempo' || e.target.value === 'listening') ? 'block' : 'none';
   });
 });
 
@@ -1402,6 +1491,8 @@ document.getElementById('signupBtn').addEventListener('click', async () => {
 });
 
 document.getElementById('logoutBtn').addEventListener('click', async () => {
+  stopTuner(); // チューナー・FFT分析が動いたままログアウトして、マイクを起動したままにしない
+  stopFFT();
   if (!isGuest) await logout(); // ゲストはサーバー側にセッションが無いのでログアウトAPIは呼ばない
   currentUser = null;
   currentProfileId = null;
@@ -1441,6 +1532,179 @@ function initDemoModeUI() {
   document.getElementById('demoTabBtn').style.display =
     (currentUser && currentUser.role === 'admin') ? '' : 'none';
 }
+
+// 管理者にだけ「検証」タブ（チューナー）を表示する
+function initVerifyTab() {
+  document.getElementById('verifyTabBtn').style.display =
+    (currentUser && currentUser.role === 'admin') ? '' : 'none';
+}
+
+// ===========================
+// チューナー（検証・管理者用）
+// 練習で使うマイク(detector)とは別に、独立したPitchDetectorインスタンスでマイクを聴く。
+// 検出した周波数に一番近い音（音名対応表から）を探し、そのズレ幅（セント）をメーターで表示する
+// ===========================
+let tunerDetector = null;
+
+// 周波数(freq)に一番近い音を、音名対応表(scalesData.notes)の中から探す
+function findNearestNote(freq) {
+  let nearestKey   = null;
+  let nearestCents = Infinity;
+  for (const key in scalesData.notes) {
+    const cents = 1200 * Math.log2(freq / scalesData.notes[key].freq);
+    if (Math.abs(cents) < Math.abs(nearestCents)) {
+      nearestCents = cents;
+      nearestKey   = key;
+    }
+  }
+  return { key: nearestKey, cents: nearestCents };
+}
+
+function startTuner() {
+  document.getElementById('tunerStartBtn').style.display = 'none';
+  document.getElementById('tunerStopBtn').style.display  = 'block';
+  document.getElementById('tunerDisplay').style.display  = 'block';
+
+  tunerDetector = new PitchDetector();
+  tunerDetector.start((freq) => {
+    const { key, cents } = findNearestNote(freq);
+    if (!key) return;
+    document.getElementById('tunerNoteName').textContent = scalesData.notes[key].label;
+    document.getElementById('tunerFreq').textContent     = `${freq.toFixed(1)} Hz（${key}）`;
+    updateTunerMeter(cents);
+  });
+}
+
+function stopTuner() {
+  if (tunerDetector) {
+    tunerDetector.stop();
+    tunerDetector = null;
+  }
+  document.getElementById('tunerStartBtn').style.display = 'block';
+  document.getElementById('tunerStopBtn').style.display  = 'none';
+  document.getElementById('tunerDisplay').style.display  = 'none';
+}
+
+// ズレ幅（セント）に応じて、メーターの針の位置と色を更新する
+function updateTunerMeter(cents) {
+  const clamped = Math.max(-50, Math.min(50, cents));
+  const percent = 50 + (clamped / 50) * 50; // -50セント→0%、0セント→50%、+50セント→100%
+
+  const needle = document.getElementById('tunerMeterNeedle');
+  needle.style.left = `${percent}%`;
+
+  const absCents = Math.abs(cents);
+  needle.classList.remove('good', 'close', 'bad');
+  needle.classList.add(absCents <= 15 ? 'good' : absCents <= 35 ? 'close' : 'bad');
+
+  document.getElementById('tunerCentsText').textContent =
+    `${cents > 0 ? '+' : ''}${Math.round(cents)}セント`;
+}
+
+document.getElementById('tunerStartBtn').addEventListener('click', startTuner);
+document.getElementById('tunerStopBtn').addEventListener('click', stopTuner);
+
+// ===========================
+// FFT周波数分析（検証・管理者用）
+// AnalyserNode.getByteFrequencyData()でブラウザ標準のFFTを使い、スペクトル（周波数ごとの強さ）を
+// キャンバスに描画する。fftSizeはチューナー等と同じ2048のままにし、
+// 「自己相関を選んだ理由」で話した分解能の粗さ（サンプルレート/fftSize）を実際に見せられるようにしている
+// ===========================
+const FFT_SIZE     = 2048;
+const FFT_MIN_FREQ = 150;  // 表示範囲の下限(Hz)。ヴァイオリンの最低音(G3≈197Hz)より少し下から見せる
+const FFT_MAX_FREQ = 2000; // 表示範囲の上限(Hz)
+
+let fftAnalyser     = null;
+let fftAudioContext = null;
+let fftStream       = null;
+let fftAnimationId  = null;
+
+async function startFFT() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    alert('マイクを使用できませんでした');
+    return;
+  }
+
+  fftStream       = stream;
+  fftAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  fftAnalyser     = fftAudioContext.createAnalyser();
+  fftAnalyser.fftSize = FFT_SIZE;
+  fftAnalyser.smoothingTimeConstant = 0.7; // 表示のちらつきを抑える
+
+  const source = fftAudioContext.createMediaStreamSource(fftStream);
+  source.connect(fftAnalyser);
+
+  document.getElementById('fftStartBtn').style.display = 'none';
+  document.getElementById('fftStopBtn').style.display   = 'block';
+  document.getElementById('fftDisplay').style.display   = 'block';
+
+  drawFFT();
+}
+
+function stopFFT() {
+  if (fftAnimationId) { cancelAnimationFrame(fftAnimationId); fftAnimationId = null; }
+  if (fftStream)       { fftStream.getTracks().forEach(t => t.stop()); fftStream = null; }
+  if (fftAudioContext)  { fftAudioContext.close(); fftAudioContext = null; }
+  fftAnalyser = null;
+
+  document.getElementById('fftStartBtn').style.display = 'block';
+  document.getElementById('fftStopBtn').style.display   = 'none';
+  document.getElementById('fftDisplay').style.display   = 'none';
+}
+
+// 毎フレーム、スペクトルをキャンバスに描き直し、一番強いピークの周波数と最も近い音を表示する
+function drawFFT() {
+  if (!fftAnalyser) return;
+
+  const bufferLength = fftAnalyser.frequencyBinCount; // fftSize/2
+  const dataArray = new Uint8Array(bufferLength);
+  fftAnalyser.getByteFrequencyData(dataArray);
+
+  const sampleRate = fftAudioContext.sampleRate;
+  const binHz  = sampleRate / FFT_SIZE; // 1binあたりの周波数分解能
+  const minBin = Math.max(0, Math.floor(FFT_MIN_FREQ / binHz));
+  const maxBin = Math.min(bufferLength - 1, Math.ceil(FFT_MAX_FREQ / binHz));
+
+  const canvas = document.getElementById('fftCanvas');
+  const ctx    = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const visibleBins = maxBin - minBin + 1;
+  const barWidth = w / visibleBins;
+
+  let peakBin   = minBin;
+  let peakValue = -1;
+
+  for (let i = minBin; i <= maxBin; i++) {
+    const value = dataArray[i]; // 0-255の強さ
+    if (value > peakValue) { peakValue = value; peakBin = i; }
+    const barHeight = (value / 255) * h;
+    const x = (i - minBin) * barWidth;
+    ctx.fillStyle = 'rgba(232,196,104,0.85)';
+    ctx.fillRect(x, h - barHeight, Math.max(1, barWidth - 1), barHeight);
+  }
+
+  // 無音・ノイズのときはピーク周波数を表示しない（閾値20/255は経験的な目安）
+  const hasSignal = peakValue > 20;
+  const peakFreq  = peakBin * binHz;
+  document.getElementById('fftPeakFreq').textContent = hasSignal ? `${peakFreq.toFixed(1)} Hz` : '-- Hz';
+
+  if (hasSignal) {
+    const { key } = findNearestNote(peakFreq);
+    document.getElementById('fftPeakNote').textContent = key ? `${scalesData.notes[key].label}（${key}）` : '--';
+  } else {
+    document.getElementById('fftPeakNote').textContent = '--';
+  }
+
+  fftAnimationId = requestAnimationFrame(drawFFT);
+}
+
+document.getElementById('fftStartBtn').addEventListener('click', startFFT);
+document.getElementById('fftStopBtn').addEventListener('click', stopFFT);
 
 // 管理者にだけ「被験者アカウント作成」カードを表示する（設定タブ）
 function initSubjectAccountCreation() {
@@ -1491,6 +1755,8 @@ let scaleBuilderNotes     = [];   // 確定済みの音階の音符
 let scaleBuilderArpeggio  = [];   // 確定済みのアルペジオの音符
 let scaleBuilderPending   = null; // { offset, accidental } クリックして仮配置中（未確定）の音
 let scaleBuilderEditingId = null; // 音階一覧の「編集」から開始した場合、対象の音階ID（新規追加ならnull）
+let scaleBuilderEditIndex = null; // リスト内の既存の音を編集中の場合、そのインデックス（新規追加・挿入ならnull）
+let scaleBuilderInsertAt  = null; // 「＋」から挿入中の場合、挿入先のインデックス（末尾に追加ならnull）
 
 // 管理者にだけ「音階を追加」カードと「音階一覧」ボタンを表示する（設定タブ）
 function initScaleBuilder() {
@@ -1513,6 +1779,13 @@ function scaleBuilderNoteKey(offset, accidental) {
   return key && scalesData.notes[key] ? key : null;
 }
 
+// notes.json用のキー（例："Fs4"）から、臨時記号（'s'/'f'/null）だけを取り出す。
+// 既存の音を編集し直すとき、五線上のオフセットと合わせて仮配置の初期状態を復元するのに使う
+function scaleBuilderAccidentalFromKey(key) {
+  const [, , accidentalChar] = key.match(/^([A-Za-z])([sf]?)(\d+)$/);
+  return accidentalChar || null;
+}
+
 // 現在の臨時記号から、実在する次の臨時記号へ切り替える（存在しない組み合わせは飛ばす）
 function scaleBuilderNextAccidental(offset, current) {
   const idx = SCALE_BUILDER_ACCIDENTALS.indexOf(current);
@@ -1525,10 +1798,13 @@ function scaleBuilderNextAccidental(offset, current) {
 
 // 五線（正規の5本）と、その外側のガイド用加線をまとめて描画する（入力ステップに入ったら1回だけ呼ぶ）
 function renderScaleBuilderGuides() {
+  // 加線は五線と同じ偶数オフセット（-2,-4,...／10,12,...）にしか存在しない。
+  // 奇数オフセットは線と線の「間」（空間）であり、そこに加線は引かない
+  // （例：レ4(-1)やソ5(9)は間の音なので線は不要）
   const guideOffsets = [];
-  for (let o = SCALE_BUILDER_MIN_OFFSET; o <= SCALE_BUILDER_MAX_OFFSET; o += 2) {
-    if (o < 0 || o > 8) guideOffsets.push(o); // 五線の範囲(0,2,4,6,8)の外側だけガイド線を引く
-  }
+  for (let o = -2; o >= SCALE_BUILDER_MIN_OFFSET; o -= 2) guideOffsets.push(o);
+  for (let o = 10; o <= SCALE_BUILDER_MAX_OFFSET; o += 2) guideOffsets.push(o);
+
   document.getElementById('scaleBuilderGuideLines').innerHTML = guideOffsets.map(o =>
     `<line class="scale-builder-guide-line" x1="40" y1="${staffY(o)}" x2="420" y2="${staffY(o)}"/>`
   ).join('');
@@ -1550,15 +1826,32 @@ document.getElementById('scaleBuilderClickArea').addEventListener('click', (e) =
   let offset = Math.round((STAFF_BOTTOM_Y - local.y) / STAFF_STEP_PX);
   offset = Math.max(SCALE_BUILDER_MIN_OFFSET, Math.min(SCALE_BUILDER_MAX_OFFSET, offset));
 
+  // パネルが既に開いている（編集中・挿入中・入力し直し）場合は、弦・指・折り返し点の選択は
+  // そのままにして音の高さだけ更新する。初めて開く場合だけ、弦・指を初期値に戻す
+  const panelAlreadyOpen = document.getElementById('scaleBuilderNotePanel').style.display === 'block';
   scaleBuilderPending = { offset, accidental: null };
   renderScaleBuilderPendingNote();
-  showScaleBuilderPendingPanel();
+  if (panelAlreadyOpen) {
+    updateScaleBuilderConfirmBtnLabel();
+  } else {
+    showScaleBuilderPendingPanel();
+  }
 });
 
 // 仮配置中の音符を、五線譜上に点線の輪郭で描画する（確定済みの音符とは見た目で区別する）
+// まだ音を選んでいない（scaleBuilderPendingがnull）間は、五線譜に何も描かず、仮の音名も出さず、
+// 確定ボタンも押せないようにする。実際にクリックして音を選んだら、点線の音符を五線譜に表示する
 function renderScaleBuilderPendingNote() {
-  const group = document.getElementById('scaleBuilderPendingNote');
-  if (!scaleBuilderPending) { group.innerHTML = ''; return; }
+  const group      = document.getElementById('scaleBuilderPendingNote');
+  const labelEl     = document.getElementById('scaleBuilderPendingLabel');
+  const confirmBtn  = document.getElementById('scaleBuilderConfirmNoteBtn');
+
+  if (!scaleBuilderPending) {
+    group.innerHTML = '';
+    labelEl.textContent = '（五線譜をクリックして音を選んでください）';
+    confirmBtn.disabled = true;
+    return;
+  }
 
   const { offset, accidental } = scaleBuilderPending;
   const y = staffY(offset);
@@ -1580,8 +1873,8 @@ function renderScaleBuilderPendingNote() {
   </g>`;
 
   const key = scaleBuilderNoteKey(offset, accidental);
-  document.getElementById('scaleBuilderPendingLabel').textContent =
-    key ? `${scalesData.notes[key].label}（${key}）` : '（この位置に実在する音がありません）';
+  labelEl.textContent = key ? `${scalesData.notes[key].label}（${key}）` : '（この位置に実在する音がありません）';
+  confirmBtn.disabled = !key;
 }
 
 document.getElementById('scaleBuilderAccidentalBtn').addEventListener('click', () => {
@@ -1590,6 +1883,47 @@ document.getElementById('scaleBuilderAccidentalBtn').addEventListener('click', (
   renderScaleBuilderPendingNote();
 });
 
+// 挿入・編集中は、その前後にある確定済みの音を五線譜に薄く表示し、今どのあたりに音を置いているかの目安にする。
+// 末尾に追加するだけの通常入力では、直前の音だけを目安として表示する
+function renderScaleBuilderContextNotes() {
+  const group = document.getElementById('scaleBuilderContextNotes');
+  const list  = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+
+  let beforeNote = null;
+  let afterNote  = null;
+  if (scaleBuilderEditIndex !== null) {
+    beforeNote = list[scaleBuilderEditIndex - 1] || null;
+    afterNote  = list[scaleBuilderEditIndex + 1] || null;
+  } else if (scaleBuilderInsertAt !== null) {
+    beforeNote = list[scaleBuilderInsertAt - 1] || null;
+    afterNote  = list[scaleBuilderInsertAt] || null;
+  } else {
+    beforeNote = list[list.length - 1] || null;
+  }
+
+  const renderOne = (entry, x) => {
+    if (!entry) return '';
+    const offset = staffOffset(entry.note);
+    const y = staffY(offset);
+    const ledgers = ledgerOffsets(offset).map(o => {
+      const ly = staffY(o);
+      return `<line class="note-ledger" x1="${x - 10}" y1="${ly}" x2="${x + 10}" y2="${ly}"/>`;
+    }).join('');
+    const { accidental } = parseNoteForStaff(entry.note);
+    const accidentalGlyph = accidental === 's' ? '♯' : accidental === 'f' ? '♭' : '';
+    const accidentalSvg = accidentalGlyph
+      ? `<text class="note-accidental" x="${x - 11}" y="${y + 4}">${accidentalGlyph}</text>`
+      : '';
+    return `<g class="staff-note context">
+      ${ledgers}
+      ${accidentalSvg}
+      <ellipse class="note-head" cx="${x}" cy="${y}" rx="6" ry="4.7"/>
+    </g>`;
+  };
+
+  group.innerHTML = renderOne(beforeNote, 120) + renderOne(afterNote, 340);
+}
+
 // 仮配置中の音を確定するパネルの表示・非表示
 function showScaleBuilderPendingPanel() {
   document.getElementById('scaleBuilderNotePanel').style.display = 'block';
@@ -1597,14 +1931,39 @@ function showScaleBuilderPendingPanel() {
   document.getElementById('scaleBuilderString').value   = 'G弦';
   document.getElementById('scaleBuilderPosition').value = '開放弦';
   document.getElementById('scaleBuilderTurnCheckbox').checked = false;
+  updateScaleBuilderConfirmBtnLabel();
+  renderScaleBuilderContextNotes();
+  renderScaleBuilderInsertLines();
 }
 function hideScaleBuilderPendingPanel() {
   document.getElementById('scaleBuilderNotePanel').style.display = 'none';
-  scaleBuilderPending = null;
+  scaleBuilderPending   = null;
+  scaleBuilderEditIndex = null;
+  scaleBuilderInsertAt  = null;
   document.getElementById('scaleBuilderPendingNote').innerHTML = '';
+  document.getElementById('scaleBuilderContextNotes').innerHTML = '';
+  document.getElementById('scaleBuilderInsertLines').innerHTML = '';
 }
 
-// 「この音を確定して次へ」：仮配置中の音を、弦・指（・折り返し点）と合わせてリストに追加する
+// 音を追加・挿入する「枠」を示す左右2本の縦線を描く。パネルが開いている間は常に表示し、
+// その間のどこかに（クリックして選んだ）音が入ることを示す
+function renderScaleBuilderInsertLines() {
+  const group = document.getElementById('scaleBuilderInsertLines');
+  group.innerHTML = [170, 290].map(x =>
+    `<line class="scale-builder-insert-line" x1="${x}" y1="-15" x2="${x}" y2="125"/>`
+  ).join('');
+}
+
+// 確定ボタンの文言を、今やっていること（新規追加／挿入／既存の音の編集）に合わせて変える
+function updateScaleBuilderConfirmBtnLabel() {
+  const btn = document.getElementById('scaleBuilderConfirmNoteBtn');
+  if (scaleBuilderEditIndex !== null)      btn.textContent = 'この音を更新する';
+  else if (scaleBuilderInsertAt !== null)  btn.textContent = 'ここに挿入する';
+  else                                     btn.textContent = 'この音を確定して次へ';
+}
+
+// 確定ボタン：仮配置中の音を、弦・指（・折り返し点）と合わせてリストに反映する。
+// 新規追加なら末尾に追加、「＋」から来ていれば指定位置に挿入、既存の音の編集なら置き換える
 document.getElementById('scaleBuilderConfirmNoteBtn').addEventListener('click', () => {
   if (!scaleBuilderPending) return;
   const key = scaleBuilderNoteKey(scaleBuilderPending.offset, scaleBuilderPending.accidental);
@@ -1619,14 +1978,24 @@ document.getElementById('scaleBuilderConfirmNoteBtn').addEventListener('click', 
     entry.turn = true;
   }
 
-  (scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio).push(entry);
+  const list = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+  if (scaleBuilderEditIndex !== null) {
+    list[scaleBuilderEditIndex] = entry;
+  } else if (scaleBuilderInsertAt !== null) {
+    list.splice(scaleBuilderInsertAt, 0, entry);
+  } else {
+    list.push(entry);
+  }
+
   hideScaleBuilderPendingPanel();
   renderScaleBuilderNoteList();
 });
 
 // 「◀ 一つ戻る」：仮配置中の音があればそれを取り消し、無ければ直前に確定した音を1つ取り消す
 document.getElementById('scaleBuilderBackBtn').addEventListener('click', () => {
-  if (scaleBuilderPending) {
+  // パネルが開いている間は、まだ音を選んでいない（挿入待ち）状態でもキャンセル扱いにする
+  const panelOpen = document.getElementById('scaleBuilderNotePanel').style.display === 'block';
+  if (panelOpen) {
     hideScaleBuilderPendingPanel();
     return;
   }
@@ -1635,17 +2004,82 @@ document.getElementById('scaleBuilderBackBtn').addEventListener('click', () => {
   renderScaleBuilderNoteList();
 });
 
-// 確定済みの音符一覧（テキストリスト）と、入力中の音数の表示を更新する
+// 確定済みの音符一覧を、各音ごとの「編集」「削除」ボタンと、音と音の間の「＋」挿入ポイント付きで描画する。
+// 入力中の音数の表示もここで更新する
 function renderScaleBuilderNoteList() {
   const list = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
-  document.getElementById('scaleBuilderNoteList').innerHTML = list.map(n => {
+  const container = document.getElementById('scaleBuilderNoteList');
+
+  const insertRow = (at) =>
+    `<div class="scale-builder-insert-row" data-insert-at="${at}">＋ ここに音を挿入</div>`;
+
+  const noteRow = (n, i) => {
     const noteData = scalesData.notes[n.note];
-    return `<li>${noteData.label}（${n.note}） − ${n.string}・${n.position}${n.turn ? '<span class="turn-mark">◀折り返し</span>' : ''}</li>`;
-  }).join('');
+    const turnMark = n.turn ? '<span class="turn-mark">◀折り返し</span>' : '';
+    return `<div class="scale-builder-note-item" data-index="${i}">
+      <span class="scale-builder-note-num">${i + 1}.</span>
+      <span class="scale-builder-note-text">${noteData.label}（${n.note}） − ${n.string}・${n.position}${turnMark}</span>
+      <div class="scale-builder-note-actions">
+        <button type="button" class="btn-secondary scale-builder-edit-note-btn" data-index="${i}">編集</button>
+        <button type="button" class="btn-danger scale-builder-delete-note-btn" data-index="${i}">削除</button>
+      </div>
+    </div>`;
+  };
+
+  container.innerHTML = insertRow(0) + list.map((n, i) => noteRow(n, i) + insertRow(i + 1)).join('');
+
+  container.querySelectorAll('.scale-builder-insert-row').forEach(row => {
+    row.addEventListener('click', () => startScaleBuilderInsert(parseInt(row.dataset.insertAt, 10)));
+  });
+  container.querySelectorAll('.scale-builder-edit-note-btn').forEach(btn => {
+    btn.addEventListener('click', () => startScaleBuilderNoteEdit(parseInt(btn.dataset.index, 10)));
+  });
+  container.querySelectorAll('.scale-builder-delete-note-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const list = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+      list.splice(parseInt(btn.dataset.index, 10), 1);
+      hideScaleBuilderPendingPanel();
+      renderScaleBuilderNoteList();
+    });
+  });
 
   const count     = list.length;
   const phaseText = scaleBuilderPhase === 'arpeggio' ? 'アルペジオ' : '音階';
   document.getElementById('scaleBuilderPhaseLabel').textContent = `${phaseText}を入力中（${count}音）`;
+}
+
+// 音階一覧の各行の「編集」ボタンで呼ばれる：既存の音を仮配置パネルに読み込み、修正できるようにする
+function startScaleBuilderNoteEdit(index) {
+  const list  = scaleBuilderPhase === 'notes' ? scaleBuilderNotes : scaleBuilderArpeggio;
+  const entry = list[index];
+  if (!entry) return;
+
+  scaleBuilderEditIndex = index;
+  scaleBuilderInsertAt  = null;
+  scaleBuilderPending   = { offset: staffOffset(entry.note), accidental: scaleBuilderAccidentalFromKey(entry.note) };
+  renderScaleBuilderPendingNote();
+  showScaleBuilderPendingPanel();
+
+  document.getElementById('scaleBuilderString').value   = entry.string;
+  document.getElementById('scaleBuilderPosition').value = entry.position;
+  document.getElementById('scaleBuilderTurnCheckbox').checked = !!entry.turn;
+  updateScaleBuilderConfirmBtnLabel();
+
+  document.getElementById('scaleBuilderNotePanel').scrollIntoView({ block: 'nearest' });
+}
+
+// 各行の間にある「＋」で呼ばれる：新しい音を指定位置に挿入する準備をする。
+// 初期のピッチは、直前の音（無ければ直後の音、どちらも無ければA4）を引き継いでおく
+// 挿入する音のピッチはまだ決めない（デフォルト値を仮表示しない）。
+// 管理者が実際に五線譜をクリックして選ぶまで、確定ボタンは押せない状態にしておく
+function startScaleBuilderInsert(insertAt) {
+  scaleBuilderEditIndex = null;
+  scaleBuilderInsertAt  = insertAt;
+  scaleBuilderPending   = null;
+  renderScaleBuilderPendingNote(); // ラベルを「選んでください」にし、確定ボタンを無効化する
+  showScaleBuilderPendingPanel();
+
+  document.getElementById('scaleBuilderNotePanel').scrollIntoView({ block: 'nearest' });
 }
 
 // 「入力を完了する」：音階の入力ならアルペジオを追加するか尋ね、アルペジオの入力ならそのまま保存する
@@ -1908,6 +2342,7 @@ async function onLoggedIn() {
   await loadAppSettings();
   initResultDisplaySetting();
   initDemoModeUI();
+  initVerifyTab();
   initSubjectAccountCreation();
   initSignupSetting();
   initScaleBuilder();
@@ -1939,6 +2374,7 @@ document.getElementById('guestBtn').addEventListener('click', async () => {
   document.getElementById('logoutBtn').textContent = '🚪 ログイン画面に戻る';
   document.getElementById('logoutBtn').title = 'ログイン画面に戻る';
   document.getElementById('demoTabBtn').style.display    = 'none';
+  document.getElementById('verifyTabBtn').style.display   = 'none';
   document.getElementById('statsTabBtn').style.display    = 'none';
   document.getElementById('settingsTabBtn').style.display = 'none';
   document.getElementById('historySection').style.display = 'none';

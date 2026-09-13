@@ -69,6 +69,7 @@
     <nav class="tab-nav">
       <button class="tab-btn active" data-tab="practice">練習</button>
       <button class="tab-btn" id="demoTabBtn" data-tab="demo" style="display:none">デモ</button>
+      <button class="tab-btn" id="verifyTabBtn" data-tab="verify" style="display:none">検証</button>
       <button class="tab-btn" id="statsTabBtn" data-tab="stats">記録</button>
       <button class="tab-btn" id="settingsTabBtn" data-tab="settings">設定</button>
     </nav>
@@ -80,7 +81,7 @@
   <main>
 
     <!-- ===== 練習タブ ===== -->
-    <div id="tab-practice">
+    <div id="tab-practice" class="tab-content">
 
       <!-- 練習設定 -->
       <section class="card" id="setupCard">
@@ -116,6 +117,7 @@
           <div class="radio-group">
             <label><input type="radio" name="mode" value="step" checked>1音ずつ</label>
             <label><input type="radio" name="mode" value="tempo">テンポ</label>
+            <label><input type="radio" name="mode" value="listening">🎧 リスニング</label>
           </div>
         </div>
 
@@ -210,7 +212,7 @@
     </div>
 
     <!-- ===== デモタブ（管理者用） ===== -->
-    <div id="tab-demo" style="display:none">
+    <div id="tab-demo" class="tab-content" style="display:none">
 
       <!-- デモモード（管理者用。マイク無しでテンポ練習を自動シミュレートする。練習とは別の入り口として独立させてある） -->
       <section class="card" id="demoModeCard">
@@ -282,8 +284,61 @@
 
     </div>
 
+    <!-- ===== 検証タブ（管理者用） ===== -->
+    <div id="tab-verify" class="tab-content" style="display:none">
+
+      <section class="card" id="tunerCard">
+        <h2>🎯 チューナー（検証・管理者用）</h2>
+        <p class="login-note">マイクの音を拾って、周波数・最も近い音・そのズレ幅（セント）を表示します。ピッチ検出の精度確認などにお使いください。</p>
+
+        <button type="button" class="btn-primary" id="tunerStartBtn">▶ チューナーを開始</button>
+        <button type="button" class="btn-secondary" id="tunerStopBtn" style="display:none">■ 停止</button>
+
+        <div id="tunerDisplay" style="display:none">
+          <div class="tuner-note-name" id="tunerNoteName">--</div>
+          <div class="tuner-freq" id="tunerFreq">-- Hz</div>
+
+          <div class="tuner-meter">
+            <div class="tuner-meter-scale">
+              <span>-50</span><span>0</span><span>+50</span>
+            </div>
+            <div class="tuner-meter-bar">
+              <div class="tuner-meter-center-line"></div>
+              <div class="tuner-meter-needle" id="tunerMeterNeedle"></div>
+            </div>
+            <div class="tuner-cents" id="tunerCentsText">0セント</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="fftCard">
+        <h2>📊 FFT周波数分析（検証・管理者用）</h2>
+        <p class="login-note">
+          マイクの音をFFT（高速フーリエ変換）で周波数領域に変換し、スペクトル（周波数ごとの強さ）を表示します。
+          fftSize=2048で計算しているため、1目盛りの分解能はサンプルレート44100Hz時で約21.5Hzです
+          （自己相関を使ったチューナーより粗い分解能になる点を、実際のスペクトルで確認できます）。
+        </p>
+
+        <button type="button" class="btn-primary" id="fftStartBtn">▶ FFT分析を開始</button>
+        <button type="button" class="btn-secondary" id="fftStopBtn" style="display:none">■ 停止</button>
+
+        <div id="fftDisplay" style="display:none">
+          <canvas id="fftCanvas" width="460" height="200" class="fft-canvas"></canvas>
+          <div class="fft-axis-labels">
+            <span id="fftAxisMin">150 Hz</span>
+            <span id="fftAxisMax">2000 Hz</span>
+          </div>
+          <div class="fft-peak-info">
+            <span>ピーク周波数：<strong id="fftPeakFreq">-- Hz</strong></span>
+            <span>最も近い音：<strong id="fftPeakNote">--</strong></span>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
     <!-- ===== 記録・グラフタブ ===== -->
-    <div id="tab-stats" style="display:none">
+    <div id="tab-stats" class="tab-content" style="display:none">
 
       <!-- アカウント一覧（管理者のみ） -->
       <section class="card" id="accountListCard" style="display:none">
@@ -337,7 +392,7 @@
     </div>
 
     <!-- ===== 設定タブ ===== -->
-    <div id="tab-settings" style="display:none">
+    <div id="tab-settings" class="tab-content" style="display:none">
 
       <section class="card" id="subjectAccountCard" style="display:none">
         <h2>🧪 被験者アカウント作成（管理者用）</h2>
@@ -384,6 +439,8 @@
               <g id="scaleBuilderGuideLines"></g>
               <g id="scaleBuilderStaffLines"></g>
               <text class="staff-clef" x="6" y="98">𝄞</text>
+              <g id="scaleBuilderContextNotes"></g>
+              <g id="scaleBuilderInsertLines"></g>
               <g id="scaleBuilderPendingNote"></g>
               <rect id="scaleBuilderClickArea" x="0" y="-20" width="460" height="150" fill="transparent" style="cursor:pointer"/>
             </svg>
@@ -434,7 +491,7 @@
             <button type="button" class="btn-primary" id="scaleBuilderFinishBtn">入力を完了する</button>
           </div>
 
-          <ol id="scaleBuilderNoteList" class="scale-builder-note-list"></ol>
+          <div id="scaleBuilderNoteList" class="scale-builder-note-list"></div>
         </div>
 
         <!-- ステップ3：アルペジオを続けて入力するか -->

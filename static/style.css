@@ -126,15 +126,23 @@ main {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 28px;
+}
+
+/* 各タブの中身（カードやボタンが並ぶ入れ物）。.cardは自分では余白を持たないため、
+   ここでタブ内の要素同士に隙間を作る（mainのgapはタブ同士の間にしか効かないため） */
+.tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
 }
 
 .card {
   background: var(--bg-card);
-  border: 1px solid var(--border-soft);
+  border: 1px solid rgba(212, 162, 78, 0.4);
   border-radius: 16px;
   padding: 20px;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  box-shadow: 0 6px 22px rgba(0,0,0,0.55);
 }
 
 .card h2 { font-size: 1.1rem; color: var(--gold); margin-bottom: 16px; }
@@ -303,9 +311,17 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .scale-builder-hint { font-size: 0.8rem; margin: 4px 0 12px; }
 
-/* 仮配置中（未確定）の音符は点線の輪郭で、確定済みの音符と見分けられるようにする */
+/* 音を追加・挿入する「枠」を示す左右2本の縦線。パネルが開いている間、常に表示する */
+.scale-builder-insert-line { stroke: var(--gold-bright); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.5; }
+
+/* 実際にクリックして選んだ（まだ未確定の）音符は、点線の輪郭で表示する */
 .staff-note.pending .note-head { fill: rgba(232,196,104,0.25); stroke: var(--gold-bright); stroke-dasharray: 3 2; }
 .staff-note.pending .note-accidental { fill: var(--gold-bright); }
+
+/* 挿入・編集中、その前後にある確定済みの音を控えめに表示する（位置の目安） */
+.staff-note.context { opacity: 0.55; }
+.staff-note.context .note-head { fill: var(--bg-input); stroke: var(--text-muted); }
+.staff-note.context .note-accidental { fill: var(--text-muted); font-size: 12px; }
 
 .scale-builder-pending-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
@@ -314,14 +330,38 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .scale-builder-note-list {
   margin-top: 16px;
-  padding-left: 1.4em;
   font-size: 0.85rem;
   color: var(--text-secondary);
-  max-height: 200px;
+  max-height: 280px;
   overflow-y: auto;
 }
-.scale-builder-note-list li { margin-bottom: 4px; }
-.scale-builder-note-list li .turn-mark { color: var(--gold-bright); font-weight: bold; margin-left: 4px; }
+
+.scale-builder-note-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+}
+.scale-builder-note-num  { color: var(--text-muted); flex-shrink: 0; }
+.scale-builder-note-text { flex: 1; }
+.scale-builder-note-text .turn-mark { color: var(--gold-bright); font-weight: bold; margin-left: 4px; }
+
+.scale-builder-note-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.scale-builder-note-actions button {
+  width: auto; margin: 0; padding: 4px 10px; font-size: 0.75rem;
+}
+
+.scale-builder-insert-row {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 3px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+}
+.scale-builder-insert-row:hover { opacity: 1; color: var(--gold-bright); }
 
 /* ===== 音階一覧（管理者用）：編集・削除 ===== */
 .scale-list-category { margin-bottom: 20px; }
@@ -561,3 +601,88 @@ canvas { max-height: 260px; }
 .account-row:hover { background: rgba(212,162,78,0.08); }
 .account-row.selected { background: rgba(212,162,78,0.18); }
 .account-row.selected td:first-child { box-shadow: inset 3px 0 0 var(--gold-bright); }
+
+/* ===== チューナー（検証・管理者用） ===== */
+#tunerDisplay { margin-top: 20px; }
+
+.tuner-note-name {
+  font-size: 3.2rem;
+  font-weight: bold;
+  text-align: center;
+  color: var(--gold-bright);
+  margin: 12px 0 4px;
+}
+.tuner-freq { text-align: center; color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 24px; }
+
+.tuner-meter-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.tuner-meter-bar {
+  position: relative;
+  height: 36px;
+  background: var(--bg-input);
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+
+.tuner-meter-center-line {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--text-secondary);
+  opacity: 0.6;
+  transform: translateX(-50%);
+}
+
+.tuner-meter-needle {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 6px;
+  border-radius: 3px;
+  left: 50%;
+  background: var(--gold-bright);
+  transform: translateX(-50%);
+  transition: left 0.08s linear, background 0.15s;
+}
+.tuner-meter-needle.good  { background: var(--success); }
+.tuner-meter-needle.close { background: var(--warning); }
+.tuner-meter-needle.bad   { background: var(--danger); }
+
+.tuner-cents { text-align: center; margin-top: 10px; font-size: 0.9rem; color: var(--text-secondary); }
+
+/* ===== FFT周波数分析（検証・管理者用） ===== */
+.fft-canvas {
+  width: 100%;
+  height: 200px;
+  display: block;
+  background: var(--bg-input);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  margin-top: 16px;
+}
+
+.fft-axis-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.fft-peak-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 16px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+.fft-peak-info strong { color: var(--gold-bright); }
