@@ -56,14 +56,44 @@ async function getProfiles() {
   return await res.json();
 }
 
-async function createProfile(name, password) {
+// roadmapOptions（{direction, bpm}）を渡すと、被験者アカウントとして
+// 「決まった練習のロードマップ」（音階6つを順番に練習する）を割り当てて作成する
+async function createProfile(name, password, roadmapOptions) {
   const res = await fetch('/api/profiles', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, password })
+    body: JSON.stringify({ name, password, ...(roadmapOptions || {}) })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'アカウントの作成に失敗しました');
+  return data;
+}
+
+// 被験者アカウントに割り当てられた練習ロードマップ（{steps, current_step}）を取得する
+async function getSubjectAssignment(profileId) {
+  const url = profileId ? `/api/subject-assignment?profile_id=${profileId}` : '/api/subject-assignment';
+  const res = await apiFetch(url);
+  const data = await res.json();
+  if (!res.ok) return null; // 割り当てが無い（一般アカウント）場合はnull
+  return data;
+}
+
+// 被験者ロードマップを1ステップ進める（現在の音階に合格したときに呼ぶ）
+async function advanceSubjectProgress() {
+  const res = await apiFetch('/api/subject-progress/advance', { method: 'POST' });
+  return await res.json();
+}
+
+// 被験者の練習ロードマップ（音階6つ・方向・テンポ）を管理者が変更する。
+// steps は [{category_key, scale_id}, ...]（6個）、direction/bpmは6つ共通
+async function updateSubjectAssignment(profileId, steps, direction, bpm) {
+  const res = await apiFetch(`/api/subject-assignment/${profileId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ steps, direction, bpm })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'ロードマップの更新に失敗しました');
   return data;
 }
 

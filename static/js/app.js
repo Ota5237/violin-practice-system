@@ -45,6 +45,19 @@ let currentProfileId = null; // 選択中のプロフィール（ユーザー）
 let resultDisplayMode = 'accuracy'; // 結果画面の表示：'accuracy'=正答率／'score'=カラオケ風の点数／'both'=両方（管理者が設定を切り替える）
 let isDemoRun = false; // 今進行中の練習が「デモ開始」から始まったものかどうか（記録の保存要否・もう一回の挙動を分けるのに使う）
 let signupEnabled = 'yes'; // ログイン画面から新規アカウント作成を許可するか：'yes'/'no'（管理者が設定を切り替える）
+let stepHoldGeneral = 'no'; // 管理者以外のアカウントにも1音ずつモードの「保持判定」を適用するか：'yes'/'no'（管理者が設定を切り替える）
+let passThreshold = 80; // 被験者アカウントのテンポ練習の合格基準（100点満点中の点数。管理者が設定を切り替える）
+let correctCents = 15; // 「正解」と判定する音程のズレ幅（セント以内）。1音ずつ・テンポ・点数計算すべてで使う（管理者が設定を切り替える）
+let closeCents   = 35; // 「惜しい」と判定する音程のズレ幅（セント以内）。これを超えたら「ズレ大」（管理者が設定を切り替える）
+
+// 被験者アカウント用の「決まった練習」プロトコル
+// （テンポ練習→不合格なら間違えた音を1音ずつ練習→自動で再テンポ練習…を合格まで繰り返す）
+let subjectProtocolActive = false; // 今ログイン中のアカウントがこのプロトコルの対象か
+let adminExperiencing     = false; // 管理者が「自分で体験する」でこのプロトコルを一時的に試している最中か
+let subjectAutoAdvanceTimer = null; // プロトコルの自動進行（次のテンポ練習/1音ずつ練習へのsetTimeout）ID。中断時に解除するため保持
+const SUBJECT_ROADMAP_LENGTH = 6; // 被験者に練習してもらう音階の数（サーバー側のSUBJECT_ROADMAP_LENGTHと合わせる）
+let subjectRoadmapSteps = []; // ロードマップの各ステップ { step_order, category_key, scale_id, direction, bpm }
+let subjectRoadmapIndex = 0;  // 現在挑戦中のステップ（0始まり）
 
 // テンポモード用
 let tempoInterval  = null; // メトロノームのsetInterval ID（stopPractice等で止めるために保持）
@@ -54,6 +67,17 @@ let detectedFreqNow = null; // テンポモードで「直近に検出できた�
 let practiceResults = []; // 結果画面の詳細表示用：今回の練習で音ごとに何が起きたかの記録
 let currentNoteMissed = false; // 1音ずつモードで、今の音を一発で取れず「惜しい/ズレ大」を経由したか
 let showCurrentGlow = true; // 音符トラックの「今弾く音」の光り方を出すかどうか（テンポモードのカウントダウン中はfalseにする）
+
+// 1音ずつモード「保持判定」（管理者用の追加機能）
+// 一瞬正解範囲に入っただけで次に進むのではなく、STEP_HOLD_REQUIRED_MS分だけ
+// 正解範囲を保持できたら正解とする。ただしマイク入力は一瞬途切れる/ノイズが乗ることがあるため、
+// STEP_HOLD_GRACE_MS以内の短い途切れ（無音でコールバック自体が来ない間）は積算を止めずに許容する。
+// はっきり音程を外した判定が来た場合はその場で積算をリセットする。
+const STEP_HOLD_REQUIRED_MS = 1000;
+const STEP_HOLD_GRACE_MS    = 250;
+let stepHoldModeOn   = false; // 今回の練習で保持判定モードが有効か（startStepMode()で確定する）
+let stepHoldMs       = 0;     // 正解範囲に入っていた時間の積算(ms)
+let stepHoldLastTime = null;  // 直近に判定コールバックを処理した時刻(performance.now())
 
 // ===== 音階データ読み込み =====
 // ページ読み込み時に音階データ一式（音名→周波数の対応表 notes.json と、
@@ -73,6 +97,7 @@ async function loadScales() {
   populateDemoScaleSelect();
   renderFingerboardLandmarks();
   populateDemoToneNoteSelect();
+  populateTunerTargetNoteSelect();
 }
 
 // デモモードの「セント調整で音を鳴らす」用に、音名セレクトの中身を作る
@@ -85,6 +110,16 @@ function populateDemoToneNoteSelect() {
   ).join('');
   const defaultKey = keys.includes('A4') ? 'A4' : keys[0];
   if (defaultKey) select.value = defaultKey;
+}
+
+// チューナーの「5秒間記録」用に、目標音セレクトの中身を作る。
+// 先頭に「自動（最も近い音）」を用意し、既定ではそれを選んだ状態＝従来通りの挙動にする
+function populateTunerTargetNoteSelect() {
+  const select = document.getElementById('tunerTargetNote');
+  if (!select) return;
+  const keys = Object.keys(scalesData.notes);
+  select.innerHTML = '<option value="">-- 自動（検出した音の中で最も近い音） --</option>' +
+    keys.map(key => `<option value="${key}">${scalesData.notes[key].label}（${key}）</option>`).join('');
 }
 
 // ===== カテゴリー・調セレクト =====
@@ -242,6 +277,13 @@ function startDemo() {
 // マイクを起動し、判定コールバックを登録して1音ずつモードを開始する
 function startStepMode() {
   isPracticing = true;
+  // 管理者は自分のラジオボタンでその場限りに判定方式を切り替えられる。
+  // 管理者以外（一般ユーザー・ゲスト）は、管理者が設定タブで選んだ
+  // 「1音ずつモードの正解判定」（stepHoldGeneral）の設定に従う
+  const isAdminPracticing = currentUser && currentUser.role === 'admin';
+  stepHoldModeOn = isAdminPracticing
+    ? document.querySelector('input[name="stepHoldMode"]:checked')?.value === 'hold'
+    : stepHoldGeneral === 'yes';
   showCurrentNote();
   activeSource = detector; // デモモードは今のところテンポモードのみ対応。念のため実マイクに戻しておく
 
@@ -252,9 +294,22 @@ function startStepMode() {
   });
 }
 
+// 正解が確定したときの共通処理（瞬間判定・保持判定のどちらからも呼ばれる）
+function markStepNoteCorrect(entry, cents) {
+  const statusEl = document.getElementById('resultStatus');
+  statusEl.textContent = '✅ 正解！';
+  statusEl.className   = 'result-status correct';
+  notesCorrect++;
+  practiceResults.push({ note: entry.note, string: entry.string, outcome: currentNoteMissed ? 'retry' : 'correct', cents });
+  isPracticing = false; // 次の音に切り替わるまで、それ以上の判定を止める
+  hideStepHoldMeter();
+  setTimeout(nextNote, 800); // 正解表示を一瞬見せてから次の音へ
+}
+
 // 検出された周波数を「今弾くべき音」の正しい周波数と比較し、結果を画面に表示する。
 // 音程のズレは半音を100分割した単位「セント」で評価する
-// （±15セント以内なら正解、±35セント以内なら惜しい、それ以上はズレ大）。
+// （±correctCentsセント以内なら正解、±closeCentsセント以内なら惜しい、それ以上はズレ大。
+//  いずれも管理者が設定タブで変更できる）。
 function onPitchDetectedStep(freq) {
   const entry    = practiceNotes[currentIndex];
   const noteData = scalesData.notes[entry.note];
@@ -264,22 +319,57 @@ function onPitchDetectedStep(freq) {
   const absCents = Math.abs(cents);
   const statusEl = document.getElementById('resultStatus');
 
-  if (absCents <= 15) {
-    statusEl.textContent = '✅ 正解！';
-    statusEl.className   = 'result-status correct';
-    notesCorrect++;
-    practiceResults.push({ note: entry.note, string: entry.string, outcome: currentNoteMissed ? 'retry' : 'correct', cents });
-    isPracticing = false; // 次の音に切り替わるまで、それ以上の判定を止める
-    setTimeout(nextNote, 800); // 正解表示を一瞬見せてから次の音へ
-  } else if (absCents <= 35) {
+  if (absCents <= correctCents) {
+    if (!stepHoldModeOn) {
+      markStepNoteCorrect(entry, cents);
+      return;
+    }
+    // 保持判定：正解範囲に入っていた時間を積算する。マイクの一瞬の途切れ（無音でコールバックが
+    // 来ない間）はSTEP_HOLD_GRACE_MS以内ならリセットせず、途切れなく弾き続けたものとして扱う
+    const now   = performance.now();
+    const delta = (stepHoldLastTime !== null && now - stepHoldLastTime < STEP_HOLD_GRACE_MS)
+      ? now - stepHoldLastTime : 0;
+    stepHoldMs += delta;
+    stepHoldLastTime = now;
+
+    const progress = Math.min(1, stepHoldMs / STEP_HOLD_REQUIRED_MS);
+    statusEl.textContent = `🎯 保持中…${Math.round(progress * 100)}%`;
+    statusEl.className   = 'result-status holding';
+    updateStepHoldMeter(progress);
+
+    if (stepHoldMs >= STEP_HOLD_REQUIRED_MS) {
+      markStepNoteCorrect(entry, cents);
+    }
+  } else if (absCents <= closeCents) {
+    stepHoldMs = 0; stepHoldLastTime = null;
+    hideStepHoldMeter();
     statusEl.textContent = cents > 0 ? '▲ 少し高い' : '▼ 少し低い';
     statusEl.className   = 'result-status close';
     currentNoteMissed = true;
   } else {
+    stepHoldMs = 0; stepHoldLastTime = null;
+    hideStepHoldMeter();
     statusEl.textContent = cents > 0 ? '高すぎ ▲' : '低すぎ ▼';
     statusEl.className   = 'result-status wrong';
     currentNoteMissed = true;
   }
+}
+
+// 保持判定モードの進捗バーを表示・更新する（progressは0〜1）
+function updateStepHoldMeter(progress) {
+  const meter = document.getElementById('stepHoldMeter');
+  const fill  = document.getElementById('stepHoldMeterFill');
+  if (!meter || !fill) return;
+  meter.style.display = 'block';
+  fill.style.width = `${Math.round(progress * 100)}%`;
+}
+
+function hideStepHoldMeter() {
+  const meter = document.getElementById('stepHoldMeter');
+  const fill  = document.getElementById('stepHoldMeterFill');
+  if (!meter || !fill) return;
+  meter.style.display = 'none';
+  fill.style.width = '0%';
 }
 
 // ===========================
@@ -501,7 +591,7 @@ function evaluateBeat() {
 
   if (detectedFreqNow && detectedFreqNow > 0) {
     const cents = 1200 * Math.log2(detectedFreqNow / noteData.freq);
-    if (Math.abs(cents) <= 20) {
+    if (Math.abs(cents) <= correctCents) {
       statusEl.textContent = '✅';
       statusEl.className   = 'result-status correct';
       notesCorrect++;
@@ -608,6 +698,9 @@ function showCurrentNote(clearStatus = true) {
   if (currentIndex >= practiceNotes.length) return;
   const entry = practiceNotes[currentIndex];
   currentNoteMissed = false;
+  stepHoldMs = 0;
+  stepHoldLastTime = null;
+  hideStepHoldMeter();
   if (clearStatus) {
     document.getElementById('resultStatus').textContent = '';
     document.getElementById('resultStatus').className   = 'result-status';
@@ -695,7 +788,7 @@ function renderFingerboardLandmarks() {
       chip.dataset.note   = noteKey;
 
       const circle = document.createElementNS(svgNS, 'circle');
-      circle.setAttribute('cx', x); circle.setAttribute('cy', y); circle.setAttribute('r', 8);
+      circle.setAttribute('cx', x); circle.setAttribute('cy', y); circle.setAttribute('r', 8.5);
       circle.setAttribute('class', 'fb-landmark-circle');
       chip.appendChild(circle);
 
@@ -904,10 +997,13 @@ async function completePractice() {
   // ゲストモードでは記録を一切保存しない（ログインしていないので保存先のアカウントが無い）。
   // デモ実行は「この結果を記録に残すか」で「記録する」が選ばれていない限り保存しない
   // （デモはマイク無しのシミュレーションなので、実際の練習記録に混ざらないようにする）。
+  // 通常の練習モードにも管理者用に同様のトグルがあり（既定は「記録する」＝従来通り）、
+  // 動作確認のたびに記録が増えてしまうのを管理者が避けられるようにしている
   // リスニングモードはそもそも判定を行っていないので、一切保存しない
-  const demoWantsSave = !isDemoRun ||
-    document.querySelector('input[name="demoSaveHistory"]:checked').value === 'yes';
-  if (!isGuest && demoWantsSave && mode !== 'listening') {
+  const wantsSave = isDemoRun
+    ? document.querySelector('input[name="demoSaveHistory"]:checked').value === 'yes'
+    : document.querySelector('input[name="practiceSaveHistory"]:checked').value === 'yes';
+  if (!isGuest && wantsSave && mode !== 'listening') {
     // profile_idは送らない。誰の記録として保存するかはサーバー側で
     // ログイン中の本人アカウントに固定しているため（他人になりすまして記録できないように）
     const entry = await saveHistory({
@@ -916,6 +1012,19 @@ async function completePractice() {
       note_results: practiceResults
     });
     addHistoryItem(entry);
+  }
+
+  // 結果画面のボタンは既定で表示（被験者プロトコルの不合格時だけ、後段で非表示にする）
+  document.getElementById('retryPracticeBtn').style.display = '';
+  document.getElementById('retryBtn').style.display         = '';
+
+  // 被験者アカウントの「間違えた音だけの1音ずつ練習」が終わったところ。
+  // 結果画面は見せず、そのまま自動でテンポ練習からやり直す
+  if (subjectProtocolActive && mode === 'step') {
+    document.getElementById('practiceCard').style.display = 'none';
+    document.querySelector('input[name="mode"][value="tempo"]').checked = true;
+    subjectAutoAdvanceTimer = setTimeout(startPractice, 600);
+    return;
   }
 
   document.getElementById('practiceCard').style.display  = 'none';
@@ -942,6 +1051,83 @@ async function completePractice() {
   }
 
   renderResultDetail(mode);
+
+  // 被験者アカウントのテンポ練習が終わったところ。合格基準で判定し、
+  // 不合格なら間違えた音だけを1音ずつ練習させてから、自動でまたテンポ練習に戻す
+  if (subjectProtocolActive && mode === 'tempo') {
+    judgeSubjectTempoAttempt(scaleName, dirLabel, karaokeScore);
+  }
+}
+
+// 被験者アカウントの、テンポ練習1回ぶんの合否判定。
+// 不合格なら、完了画面のボタンを隠して数秒後に間違えた音だけの1音ずつ練習へ自動的に進む。
+// 合格なら、ロードマップに次の音階が残っていれば自動でそちらへ進み、
+// 今の音階が最後（6つ目）だった場合はロードマップ完了の表示に切り替える
+function judgeSubjectTempoAttempt(scaleName, dirLabel, karaokeScore) {
+  const scorePoints = karaokeScoreToPercent(karaokeScore);
+  const passed       = scorePoints >= passThreshold;
+  const stepLabel     = subjectRoadmapSteps.length > 0
+    ? `（音階${subjectRoadmapIndex + 1}/${subjectRoadmapSteps.length}）` : '';
+  const isLastStep     = subjectRoadmapIndex >= subjectRoadmapSteps.length - 1;
+
+  if (!passed) {
+    document.getElementById('completeMsg').textContent =
+      `😥 不合格… ${scaleName}（${dirLabel}）${stepLabel} — ${scorePoints}点/100点中（合格基準${passThreshold}点）。間違えた音を1音ずつ練習します`;
+
+    document.getElementById('retryPracticeBtn').style.display = 'none';
+    document.getElementById('retryBtn').style.display         = 'none';
+
+    const wrongEntries = practiceNotes.filter((_, i) => computeNoteScore(practiceResults[i]) < 2);
+    if (wrongEntries.length === 0) {
+      subjectAutoAdvanceTimer = setTimeout(startPractice, 600); // 通常は起きないはずの安全策（満点未満なのに対象0件の場合）
+      return;
+    }
+    subjectAutoAdvanceTimer = setTimeout(() => startSubjectStepRetry(wrongEntries), 2200);
+    return;
+  }
+
+  // 合格
+  document.getElementById('completeMsg').textContent = isLastStep
+    ? `🎉 合格！ ${scaleName}（${dirLabel}）${stepLabel} — ${scorePoints}点/100点中（合格基準${passThreshold}点）`
+    : `🎉 合格！ ${scaleName}（${dirLabel}）${stepLabel} — ${scorePoints}点/100点中（合格基準${passThreshold}点）。次の音階に進みます`;
+
+  document.getElementById('retryPracticeBtn').style.display = 'none';
+  document.getElementById('retryBtn').style.display         = 'none';
+
+  if (isLastStep) {
+    subjectRoadmapIndex++; // ロードマップ表示（丸の塗り分け）も「全クリア」に合わせる
+    if (!adminExperiencing) advanceSubjectProgress(); // 本物の被験者のみ、進捗をサーバーに保存する
+    subjectAutoAdvanceTimer = setTimeout(showSubjectRoadmapComplete, 2200);
+    return;
+  }
+
+  subjectAutoAdvanceTimer = setTimeout(async () => {
+    subjectRoadmapIndex++;
+    if (!adminExperiencing) await advanceSubjectProgress();
+    applySubjectRoadmapStep();
+    startPractice();
+  }, 2200);
+}
+
+// 被験者アカウント用：テンポ練習で間違えた音だけを対象に、1音ずつモードを開始する
+function startSubjectStepRetry(wrongEntries) {
+  practiceNotes     = wrongEntries;
+  currentIndex      = 0;
+  notesCorrect      = 0;
+  practiceResults   = [];
+  currentNoteMissed = false;
+  showCurrentGlow   = true;
+  activeSource      = detector;
+  isDemoRun         = false;
+
+  document.querySelector('input[name="mode"][value="step"]').checked = true;
+
+  document.getElementById('completeCard').style.display = 'none';
+  document.getElementById('practiceCard').style.display = 'block';
+  document.getElementById('modeBadge').textContent = '🎯 苦手な音を1音ずつ練習';
+
+  renderNoteTrack();
+  startStepMode();
 }
 
 // 音ごとの点数の内訳（音名・ズレ幅・点数）を一覧にして描画する。
@@ -971,22 +1157,18 @@ document.getElementById('scoreDetailToggle').addEventListener('click', () => {
   toggle.textContent     = showing ? '📊 点数の内訳を見る' : '📊 点数の内訳を閉じる';
 });
 
-// 音程のズレ幅（cents）から1音ぶんの判定を決めるための2つの境目
-// （1音ずつモードの「正解／惜しい／ズレ大」と同じ基準を採用している）
-const SCORE_GOOD_CENTS  = 15; // これ以内なら○（2点）
-const SCORE_CLOSE_CENTS = 35; // これ以内なら△（1点）。これを超えたら×（0点）
-
 // 1音ぶんの判定を2/1/0点で返す。
 // ・音が検出できなかった（cents無し）場合は×（0点）
-// ・|cents| が15セント以内なら○（2点）
-// ・35セント以内なら△（1点）
+// ・|cents| がcorrectCentsセント以内なら○（2点）
+// ・closeCentsセント以内なら△（1点）
 // ・それを超えたら×（0点）
+// （correctCents/closeCentsは1音ずつ・テンポモードの「正解／惜しい」と同じ基準。管理者が設定タブで変更できる）
 function computeNoteScore(result) {
   if (result.cents == null) return 0;
 
   const absCents = Math.abs(result.cents);
-  if (absCents <= SCORE_GOOD_CENTS)  return 2; // ○
-  if (absCents <= SCORE_CLOSE_CENTS) return 1; // △
+  if (absCents <= correctCents) return 2; // ○
+  if (absCents <= closeCents)   return 1; // △
   return 0; // ×
 }
 
@@ -998,11 +1180,16 @@ function noteScoreSymbol(points) {
 }
 
 // 練習1回ぶんのカラオケ風スコアを { total: 合計得点, max: 満点（弾いた音符数×2点） } で返す。
-// 100点満点への換算はせず、「合計得点／満点」をそのまま使う
+// 表示用に100点満点へ換算する場合はkaraokeScoreToPercent()を使う
 function computeKaraokeScore(results) {
   const totalPoints = results.reduce((sum, r) => sum + computeNoteScore(r), 0);
   const maxPoints    = results.length * 2;
   return { total: totalPoints, max: maxPoints };
+}
+
+// カラオケ風スコア{total, max}を、表示用に100点満点へ換算する（四捨五入）
+function karaokeScoreToPercent(karaokeScore) {
+  return karaokeScore.max > 0 ? Math.round(karaokeScore.total / karaokeScore.max * 100) : 0;
 }
 
 // 正答率（accuracy、0〜100）とカラオケ風の点数（karaokeScore = {total, max}）を、
@@ -1014,12 +1201,12 @@ function renderAccuracyOrScore(accuracy, karaokeScore) {
   const labelEl = document.getElementById('accuracyLabel');
   const subEl   = document.getElementById('accuracySub');
 
-  const scoreText  = `${karaokeScore.total}/${karaokeScore.max}点`;
+  const scoreText  = `${karaokeScoreToPercent(karaokeScore)}点`;
   const showsScore = resultDisplayMode === 'score' || resultDisplayMode === 'both';
 
   if (showsScore) {
     numEl.textContent   = scoreText;
-    labelEl.textContent = 'スコア';
+    labelEl.textContent = 'スコア（100点満点）';
   } else {
     numEl.textContent   = `${accuracy}%`;
     labelEl.textContent = '正答率';
@@ -1080,6 +1267,7 @@ function stopPractice() {
   if (tempoInterval)  { clearInterval(tempoInterval); tempoInterval = null; }
   if (countTimer)     { clearInterval(countTimer);    countTimer = null; }
   if (listeningTimer) { clearTimeout(listeningTimer); listeningTimer = null; }
+  if (subjectAutoAdvanceTimer) { clearTimeout(subjectAutoAdvanceTimer); subjectAutoAdvanceTimer = null; }
   clearMetronomeVisual();
   document.getElementById('setupCard').style.display    = 'block';
   document.getElementById('practiceCard').style.display = 'none';
@@ -1127,8 +1315,11 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// 【管理者用】全アカウントの一覧（ID・名前・権限・作成日）を表示する。
-// 行をクリックすると、そのアカウントの履歴・統計を下の各カードに表示する
+// 【管理者用】全アカウントの一覧（ID・名前・権限・作成日）を「アカウント」タブに表示する。
+// 行をクリックすると、そのアカウントが選択され、「記録」タブで履歴・統計を確認できるようになる。
+// 管理者以外の行には削除ボタンを出し、被験者アカウント（自分では削除できない）も
+// ここから管理者が削除できるようにする。被験者アカウントの行には、練習する音階
+// （ロードマップ）を変更する「音階を編集」ボタンもあわせて出す
 async function renderAccountList() {
   document.getElementById('accountListCard').style.display = 'block';
 
@@ -1137,8 +1328,12 @@ async function renderAccountList() {
     <tr class="account-row${p.id === currentProfileId ? ' selected' : ''}" data-profile-id="${p.id}">
       <td>${p.id}</td>
       <td>${escapeHtml(p.name)}</td>
-      <td>${p.role === 'admin' ? '<span class="compare-role-badge">管理者</span>' : '一般'}</td>
+      <td>${p.role === 'admin' ? '<span class="compare-role-badge">管理者</span>' : (p.is_subject === 'yes' ? '一般（被験者）' : '一般')}</td>
       <td>${p.created_at}</td>
+      <td>
+        ${p.is_subject === 'yes' ? '<button type="button" class="btn-secondary btn-sm admin-edit-roadmap-btn">音階を編集</button>' : ''}
+        ${p.role === 'admin' ? '' : '<button type="button" class="btn-danger btn-sm admin-delete-account-btn">削除</button>'}
+      </td>
     </tr>
   `).join('');
 
@@ -1152,16 +1347,135 @@ async function renderAccountList() {
       await renderStatsForCurrentProfile();
     });
   });
+
+  document.querySelectorAll('#accountListTableBody .admin-delete-account-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation(); // 行クリック（アカウント選択）が同時に発火しないようにする
+      const profileId = parseInt(btn.closest('tr').dataset.profileId, 10);
+      const profile    = profiles.find(p => p.id === profileId);
+      if (!confirm(`アカウント「${profile.name}」と、その練習履歴をすべて削除しますか？この操作は取り消せません。`)) return;
+      try {
+        await deleteProfile(profileId);
+        if (currentProfileId === profileId) currentProfileId = currentUser.id; // 見ていたアカウントを削除したら自分に戻す
+        await renderAccountList();
+        await renderHistory();
+        await renderStatsForCurrentProfile();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+
+  document.querySelectorAll('#accountListTableBody .admin-edit-roadmap-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const profileId = parseInt(btn.closest('tr').dataset.profileId, 10);
+      const profile    = profiles.find(p => p.id === profileId);
+      openSubjectRoadmapEditor(profileId, profile.name);
+    });
+  });
 }
 
-// 統計データをサーバーから取得し、「正答率の推移」「日別練習回数」「調ごとの正答率」
-// 「苦手な音」「弦ごとの正答率」の5つのグラフを描画する（統計タブを開いたときに1回だけ呼ばれる）。
-// 管理者の場合は、あわせて全アカウントの一覧も描画する
-// （アカウント同士の比較表示は廃止し、一覧から選んだ1アカウント分だけを表示する方式にした）
-async function renderStats() {
-  if (currentUser?.role === 'admin') {
-    await renderAccountList();
+// ===========================
+// 被験者の音階ロードマップ編集（管理者用）
+// ===========================
+let roadmapEditProfileId = null; // 今編集中の被験者のプロフィールID
+
+// 「音階を編集」ボタンから呼ばれる。現在のロードマップを取得し、
+// 6音階分のカテゴリー・調セレクトと、共通の方向・テンポを編集フォームに反映する
+async function openSubjectRoadmapEditor(profileId, profileName) {
+  const errorEl   = document.getElementById('roadmapEditError');
+  const successEl = document.getElementById('roadmapEditSuccess');
+  errorEl.style.display   = 'none';
+  successEl.style.display = 'none';
+
+  const data = await getSubjectAssignment(profileId);
+  if (!data || !data.steps || data.steps.length === 0) {
+    alert('この被験者には練習内容が割り当てられていません');
+    return;
   }
+
+  roadmapEditProfileId = profileId;
+  document.getElementById('roadmapEditAccountName').textContent = profileName;
+
+  const firstStep = data.steps[0];
+  document.querySelector(`input[name="roadmapEditDirection"][value="${firstStep.direction}"]`).checked = true;
+  document.getElementById('roadmapEditBpmRange').value       = firstStep.bpm;
+  document.getElementById('roadmapEditBpmValue').textContent = firstStep.bpm;
+
+  const listEl = document.getElementById('roadmapEditStepList');
+  listEl.innerHTML = data.steps.map((_, i) => `
+    <div class="roadmap-edit-row">
+      <label>音階${i + 1}</label>
+      <select class="roadmap-edit-category" data-step="${i}">
+        <option value="first_position">第一ポジションの音階</option>
+        <option value="two_octave">2オクターブの音階</option>
+      </select>
+      <select class="roadmap-edit-scale" data-step="${i}"></select>
+    </div>
+  `).join('');
+
+  data.steps.forEach((step, i) => {
+    const categorySelect = listEl.querySelector(`.roadmap-edit-category[data-step="${i}"]`);
+    const scaleSelect    = listEl.querySelector(`.roadmap-edit-scale[data-step="${i}"]`);
+    categorySelect.value = step.category_key;
+    populateRoadmapEditScaleSelect(scaleSelect, step.category_key);
+    scaleSelect.value = String(step.scale_id);
+    categorySelect.addEventListener('change', () => {
+      populateRoadmapEditScaleSelect(scaleSelect, categorySelect.value);
+    });
+  });
+
+  document.getElementById('subjectRoadmapEditCard').style.display = 'block';
+  document.getElementById('subjectRoadmapEditCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// 編集フォームの「調」セレクトの中身を、選んだカテゴリーの音階一覧で作り直す
+function populateRoadmapEditScaleSelect(scaleSelect, categoryKey) {
+  const scales = getScalesForCategory(categoryKey);
+  scaleSelect.innerHTML = Object.keys(scales)
+    .map(key => `<option value="${key}">${scales[key].name}</option>`).join('');
+}
+
+document.getElementById('roadmapEditBpmRange').addEventListener('input', (e) => {
+  document.getElementById('roadmapEditBpmValue').textContent = e.target.value;
+});
+
+document.getElementById('roadmapEditCancelBtn').addEventListener('click', () => {
+  document.getElementById('subjectRoadmapEditCard').style.display = 'none';
+  roadmapEditProfileId = null;
+});
+
+document.getElementById('roadmapEditSaveBtn').addEventListener('click', async () => {
+  const errorEl   = document.getElementById('roadmapEditError');
+  const successEl = document.getElementById('roadmapEditSuccess');
+  errorEl.style.display   = 'none';
+  successEl.style.display = 'none';
+
+  const direction = document.querySelector('input[name="roadmapEditDirection"]:checked').value;
+  const bpm       = parseInt(document.getElementById('roadmapEditBpmRange').value, 10);
+
+  const listEl = document.getElementById('roadmapEditStepList');
+  const steps  = Array.from(listEl.querySelectorAll('.roadmap-edit-category')).map(categorySelect => {
+    const scaleSelect = listEl.querySelector(`.roadmap-edit-scale[data-step="${categorySelect.dataset.step}"]`);
+    return { category_key: categorySelect.value, scale_id: parseInt(scaleSelect.value, 10) };
+  });
+
+  try {
+    await updateSubjectAssignment(roadmapEditProfileId, steps, direction, bpm);
+    successEl.textContent   = '保存しました（この被験者の進捗は最初からになります）';
+    successEl.style.display = 'block';
+  } catch (err) {
+    errorEl.textContent   = err.message;
+    errorEl.style.display = 'block';
+  }
+});
+
+// 統計データをサーバーから取得し、「正答率の推移」「日別練習回数」「調ごとの正答率」
+// 「苦手な音」「弦ごとの正答率」の5つのグラフを描画する（記録タブを開いたときに1回だけ呼ばれる）。
+// 管理者がどのアカウント分を見るかは「アカウント」タブの一覧から選ぶ
+// （アカウント同士の比較表示は廃止し、選んだ1アカウント分だけを表示する方式にした）
+async function renderStats() {
   await renderStatsForCurrentProfile();
 }
 
@@ -1303,13 +1617,18 @@ function switchTab(tab) {
   // （'block'を指定するとインラインstyleがCSSのdisplay:flexを上書きしてしまい、タブ内の余白が効かなくなるため）
   document.getElementById('tab-practice').style.display = tab === 'practice' ? '' : 'none';
   document.getElementById('tab-demo').style.display     = tab === 'demo'     ? '' : 'none';
+  document.getElementById('tab-subject-experience').style.display = tab === 'subject-experience' ? '' : 'none';
   document.getElementById('tab-verify').style.display   = tab === 'verify'   ? '' : 'none';
   document.getElementById('tab-stats').style.display    = tab === 'stats'    ? '' : 'none';
+  document.getElementById('tab-account').style.display  = tab === 'account'  ? '' : 'none';
   document.getElementById('tab-settings').style.display = tab === 'settings' ? '' : 'none';
 
   if (tab === 'stats' && !statsLoaded) {
     renderStats();
     statsLoaded = true;
+  }
+  if (tab === 'account') {
+    renderAccountList();
   }
   if (tab !== 'verify') { stopTuner(); stopFFT(); } // 検証タブから離れたら、マイクを起動したままにしない
 }
@@ -1339,8 +1658,18 @@ document.querySelectorAll('input[name="mode"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
     document.getElementById('bpmGroup').style.display =
       (e.target.value === 'tempo' || e.target.value === 'listening') ? 'block' : 'none';
+    updateStepHoldModeVisibility();
   });
 });
+
+// 管理者にだけ、1音ずつモード限定の「正解判定方式（保持判定）」トグルを表示する。
+// 保持判定はstep以外のモードには関係ないので、modeラジオがstep以外のときは管理者でも隠す
+function updateStepHoldModeVisibility() {
+  const isAdmin  = currentUser && currentUser.role === 'admin';
+  const mode     = document.querySelector('input[name="mode"]:checked').value;
+  document.getElementById('stepHoldModeGroup').style.display =
+    (isAdmin && mode === 'step') ? '' : 'none';
+}
 
 // BPMスライダーを動かしたら、隣に表示している数値も更新する
 document.getElementById('bpmRange').addEventListener('input', (e) => {
@@ -1497,6 +1826,7 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   currentUser = null;
   currentProfileId = null;
   isGuest = false;
+  resetAdminOnlyPracticeSettings(); // 選択状態を次のログインまで持ち越さない（念のための保険）
   document.getElementById('loginName').value = '';
   document.getElementById('loginPassword').value = '';
   showLoginSubForm('login');
@@ -1511,6 +1841,261 @@ async function loadAppSettings() {
   resultDisplayMode = ['score', 'both'].includes(settings.result_display_mode)
     ? settings.result_display_mode : 'accuracy';
   signupEnabled = settings.signup_enabled === 'no' ? 'no' : 'yes';
+  stepHoldGeneral = settings.step_hold_general === 'yes' ? 'yes' : 'no';
+  passThreshold = Number.isFinite(parseInt(settings.pass_threshold, 10)) ? parseInt(settings.pass_threshold, 10) : 80;
+  correctCents  = Number.isFinite(parseInt(settings.correct_cents, 10)) ? parseInt(settings.correct_cents, 10) : 15;
+  closeCents    = Number.isFinite(parseInt(settings.close_cents, 10))   ? parseInt(settings.close_cents, 10)   : 35;
+}
+
+// 管理者にだけ「被験者練習の合格基準」カードを表示し、現在の設定をスライダーに反映する
+function initPassThresholdSetting() {
+  const card = document.getElementById('passThresholdSettingCard');
+  if (!currentUser || currentUser.role !== 'admin') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  document.getElementById('passThresholdInput').value = passThreshold;
+  document.getElementById('passThresholdValue').textContent = passThreshold;
+}
+
+// 管理者がこの設定を切り替えたら、サーバーに保存する
+// （反映は被験者が次にテンポ練習の結果を判定したときから）
+document.getElementById('passThresholdInput').addEventListener('input', (e) => {
+  document.getElementById('passThresholdValue').textContent = e.target.value;
+});
+document.getElementById('passThresholdInput').addEventListener('change', async (e) => {
+  const errorEl = document.getElementById('passThresholdError');
+  errorEl.style.display = 'none';
+  const value = parseInt(e.target.value, 10);
+  try {
+    await updateSettings({ pass_threshold: value });
+    passThreshold = value;
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = 'block';
+    initPassThresholdSetting(); // 失敗したら選択状態を元に戻す
+  }
+});
+
+// 管理者にだけ「正解判定の許容誤差」カードを表示し、現在の設定を入力欄に反映する
+function initPitchToleranceSetting() {
+  const card = document.getElementById('pitchToleranceSettingCard');
+  if (!currentUser || currentUser.role !== 'admin') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  document.getElementById('correctCentsInput').value = correctCents;
+  document.getElementById('closeCentsInput').value   = closeCents;
+}
+
+// 管理者がこの設定を変更したら、サーバーに保存する
+// （反映は次に音程を判定したときから。1音ずつ・テンポ・点数計算のすべてに影響する）
+document.getElementById('correctCentsInput').addEventListener('change', async (e) => {
+  const errorEl = document.getElementById('pitchToleranceError');
+  errorEl.style.display = 'none';
+  const value = parseInt(e.target.value, 10);
+  try {
+    await updateSettings({ correct_cents: value });
+    correctCents = value;
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = 'block';
+    initPitchToleranceSetting(); // 失敗したら入力欄を元に戻す
+  }
+});
+document.getElementById('closeCentsInput').addEventListener('change', async (e) => {
+  const errorEl = document.getElementById('pitchToleranceError');
+  errorEl.style.display = 'none';
+  const value = parseInt(e.target.value, 10);
+  try {
+    await updateSettings({ close_cents: value });
+    closeCents = value;
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = 'block';
+    initPitchToleranceSetting(); // 失敗したら入力欄を元に戻す
+  }
+});
+
+// 練習設定画面を、通常の選択画面（音階・方向・モードを自分で選べる）に戻す
+function resetToNormalPracticeSetup() {
+  subjectProtocolActive = false;
+  adminExperiencing     = false;
+  subjectRoadmapSteps   = [];
+  subjectRoadmapIndex   = 0;
+  if (subjectAutoAdvanceTimer) { clearTimeout(subjectAutoAdvanceTimer); subjectAutoAdvanceTimer = null; }
+  document.getElementById('subjectProtocolInfo').style.display    = 'none';
+  document.getElementById('subjectRoadmapDoneInfo').style.display  = 'none';
+  document.getElementById('subjectExperienceInfo').style.display   = 'none';
+  document.getElementById('subjectExperienceDoneInfo').style.display = 'none';
+  document.getElementById('startBtn').style.display = '';
+  ['categoryGroup', 'scaleGroup', 'directionGroup', 'modeGroup'].forEach(id => {
+    document.getElementById(id).style.display = '';
+  });
+}
+
+// このアカウントが被験者アカウントかどうかを判定し、対象なら練習設定画面から
+// 音階・方向・モード・テンポの選択肢を隠して、ロードマップの現在のステップを自動でセットする。
+// 対象でない場合は、通常の選択画面に戻す
+async function initSubjectPractice() {
+  const isSubject = !!(currentUser && currentUser.is_subject === 'yes');
+  if (!isSubject) {
+    resetToNormalPracticeSetup();
+    return;
+  }
+
+  const data = await getSubjectAssignment(currentUser.id);
+  if (!data || !data.steps || data.steps.length === 0) {
+    // 割り当てがまだ無い場合は、通常の選択画面にフォールバックする
+    resetToNormalPracticeSetup();
+    return;
+  }
+
+  subjectProtocolActive = true;
+  adminExperiencing     = false;
+  subjectRoadmapSteps   = data.steps;
+  subjectRoadmapIndex   = Math.min(data.current_step, subjectRoadmapSteps.length);
+  ['categoryGroup', 'scaleGroup', 'directionGroup', 'modeGroup'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+
+  if (subjectRoadmapIndex >= subjectRoadmapSteps.length) {
+    showSubjectRoadmapComplete(); // 前回のログインまでに、既に6つすべて合格していた場合
+    return;
+  }
+
+  document.getElementById('subjectProtocolInfo').style.display = 'block';
+  applySubjectRoadmapStep();
+}
+
+// 登録済みの音階から、6音階分のロードマップを仮に組み立てる（研究用の実際の音階が未定のため）。
+// サーバー側（/api/profiles の被験者アカウント作成）と同じ考え方で、
+// 登録済みの音階をid順に並べ、6個に足りなければ先頭から繰り返して埋める
+function buildPlaceholderRoadmap(direction, bpm) {
+  const allScales = [];
+  Object.keys(scalesData.categories || {}).forEach(categoryKey => {
+    const scales = getScalesForCategory(categoryKey);
+    Object.keys(scales).forEach(scaleId => {
+      allScales.push({ category_key: categoryKey, scale_id: parseInt(scaleId, 10) });
+    });
+  });
+  allScales.sort((a, b) => a.scale_id - b.scale_id);
+  if (allScales.length === 0) return [];
+
+  return Array.from({ length: SUBJECT_ROADMAP_LENGTH }, (_, i) => {
+    const s = allScales[i % allScales.length];
+    return { step_order: i, category_key: s.category_key, scale_id: s.scale_id, direction, bpm };
+  });
+}
+
+// 管理者が「検証モード」タブの「体験を開始する」を押したときの処理。
+// アカウントは作らず、「設定」タブの被験者アカウント作成欄で決めた練習タイプ・テンポのまま、
+// 被験者と同じ6音階のロードマップを管理者自身のアカウントでその場から始められるようにする
+document.getElementById('startSubjectExperienceBtn').addEventListener('click', () => {
+  const errorEl = document.getElementById('subjectExperienceError');
+  errorEl.style.display = 'none';
+
+  const direction = document.querySelector('input[name="subjectDirection"]:checked').value;
+  const bpm       = parseInt(document.getElementById('subjectBpmRange').value, 10);
+
+  const roadmap = buildPlaceholderRoadmap(direction, bpm);
+  if (roadmap.length === 0) {
+    errorEl.textContent   = '音階が1つも登録されていません。先に音階を追加してください';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  stopPractice(); // 別の練習が進行中だった場合に備えて、マイク・タイマーを止めて設定画面に戻しておく
+
+  adminExperiencing      = true;
+  subjectProtocolActive  = true;
+  subjectRoadmapSteps    = roadmap;
+  subjectRoadmapIndex    = 0;
+  document.getElementById('subjectExperienceDoneInfo').style.display = 'none';
+  document.getElementById('subjectExperienceInfo').style.display     = 'block';
+  applySubjectRoadmapStep();
+
+  switchTab('practice');
+});
+
+// ロードマップ（丸をステージ、線でつないだ進行マップ）をcontainerIdの欄に描画する。
+// subjectRoadmapIndexより手前は「クリア済み」の丸、ちょうどそこは「挑戦中」の丸、
+// それより先は「未挑戦」の丸として塗り分け、丸の間の線もクリア済みの区間だけ色を付ける
+function renderRoadmapTrack(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  if (subjectRoadmapSteps.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  let html = '';
+  subjectRoadmapSteps.forEach((_, i) => {
+    const isCleared = i < subjectRoadmapIndex;
+    const isCurrent  = i === subjectRoadmapIndex;
+    const state = isCleared ? 'cleared' : (isCurrent ? 'current' : 'locked');
+    html += `<div class="roadmap-circle ${state}" title="音階${i + 1}">${isCleared ? '✓' : (i + 1)}</div>`;
+    if (i < subjectRoadmapSteps.length - 1) {
+      html += `<div class="roadmap-line ${isCleared ? 'cleared' : ''}"></div>`;
+    }
+  });
+  container.innerHTML = html;
+}
+
+// 今のロードマップのステップ（subjectRoadmapIndex）を、練習設定フォーム（非表示のまま）に
+// セットし、既存のstartPractice()がそのまま使えるようにする。あわせて案内文・ロードマップ表示にも反映する。
+// 本物の被験者（練習タブの案内）と、管理者の体験（検証モードタブの案内）は別々の欄なので、
+// adminExperiencingに応じてどちらに反映するかを切り替える
+function applySubjectRoadmapStep() {
+  const dirLabels = { up: '上行', down: '下行', updown: '上下', arpeggio: 'アルペジオ' };
+  const step = subjectRoadmapSteps[subjectRoadmapIndex];
+
+  document.getElementById('categorySelect').value = step.category_key;
+  populateScaleSelect();
+  document.getElementById('scaleSelect').value = String(step.scale_id);
+
+  document.querySelector(`input[name="direction"][value="${step.direction}"]`).checked = true;
+  document.querySelector('input[name="mode"][value="tempo"]').checked = true;
+
+  document.getElementById('bpmRange').value = step.bpm;
+  document.getElementById('bpmValue').textContent = step.bpm;
+
+  const scaleName = getScalesForCategory(step.category_key)[String(step.scale_id)]?.name || '';
+  const prefix     = adminExperiencing ? 'subjectExperience' : 'subjectProtocol';
+
+  document.getElementById(`${prefix}Scale`).textContent     = scaleName;
+  document.getElementById(`${prefix}Direction`).textContent = dirLabels[step.direction] || step.direction;
+  document.getElementById(`${prefix}Bpm`).textContent       = step.bpm;
+  document.getElementById(`${prefix}Threshold`).textContent = passThreshold;
+  document.getElementById(`${prefix}StepNum`).textContent   = subjectRoadmapIndex + 1;
+  document.getElementById(`${prefix}StepTotal`).textContent = subjectRoadmapSteps.length;
+  renderRoadmapTrack(`${prefix}Roadmap`);
+
+  document.getElementById('startBtn').disabled = false;
+}
+
+// ロードマップの6音階すべてに合格したときの表示。
+// 本物の被験者は練習タブの設定画面に、管理者の体験は「検証モード」タブに、
+// それぞれ「お疲れ様でした」の案内（全部クリア済みのロードマップ）を出す
+function showSubjectRoadmapComplete() {
+  document.getElementById('practiceCard').style.display = 'none';
+  document.getElementById('completeCard').style.display = 'none';
+
+  if (adminExperiencing) {
+    document.getElementById('subjectExperienceInfo').style.display     = 'none';
+    document.getElementById('subjectExperienceDoneInfo').style.display = 'block';
+    renderRoadmapTrack('subjectExperienceDoneTrack');
+    switchTab('subject-experience');
+    return;
+  }
+
+  document.getElementById('setupCard').style.display     = 'block';
+  document.getElementById('subjectProtocolInfo').style.display   = 'none';
+  document.getElementById('subjectRoadmapDoneInfo').style.display = 'block';
+  renderRoadmapTrack('subjectRoadmapDoneTrack');
+  document.getElementById('startBtn').style.display = 'none';
 }
 
 // 管理者にだけ「結果画面の設定」カードを表示し、現在の設定をラジオボタンに反映する
@@ -1537,6 +2122,38 @@ function initDemoModeUI() {
 function initVerifyTab() {
   document.getElementById('verifyTabBtn').style.display =
     (currentUser && currentUser.role === 'admin') ? '' : 'none';
+}
+
+// 管理者にだけ「検証モード」タブを表示する。
+// 被験者に割り当てる決まった練習（音階ロードマップ）を、管理者自身のアカウントでその場から試せる
+function initSubjectExperienceTab() {
+  document.getElementById('subjectExperienceTabBtn').style.display =
+    (currentUser && currentUser.role === 'admin') ? '' : 'none';
+}
+
+// 管理者にだけ「アカウント」タブ（全アカウント一覧・削除）を表示する
+function initAccountTab() {
+  document.getElementById('accountTabBtn').style.display =
+    (currentUser && currentUser.role === 'admin') ? '' : 'none';
+}
+
+// 管理者にだけ、通常の練習モードにも「この結果を記録に残すか」のトグルを表示する
+// （一般ユーザーは常に記録する従来通りの挙動のまま。ラジオ自体は既定で「記録する」なので、
+//  非表示のままでもcompletePractice()の判定には影響しない）
+function initPracticeSaveHistoryUI() {
+  document.getElementById('practiceSaveHistoryGroup').style.display =
+    (currentUser && currentUser.role === 'admin') ? '' : 'none';
+}
+
+// 「記録の有無」「正解判定方式（保持判定）」を既定値に戻す。
+// この2つはただのHTMLラジオボタンなので、非表示にしても選択状態はDOMに残り続けてしまう。
+// そのままだと、同じブラウザタブ内で管理者が変更した値が、次にログインした別アカウント
+// （一般ユーザーやゲスト）にも黙って適用され続けてしまうため、ログイン/ログアウトのたびに必ず呼ぶ
+function resetAdminOnlyPracticeSettings() {
+  const saveYes = document.querySelector('input[name="practiceSaveHistory"][value="yes"]');
+  if (saveYes) saveYes.checked = true;
+  const holdInstant = document.querySelector('input[name="stepHoldMode"][value="instant"]');
+  if (holdInstant) holdInstant.checked = true;
 }
 
 // ===========================
@@ -1572,6 +2189,17 @@ function startTuner() {
     document.getElementById('tunerNoteName').textContent = scalesData.notes[key].label;
     document.getElementById('tunerFreq').textContent     = `${freq.toFixed(1)} Hz（${key}）`;
     updateTunerMeter(cents);
+
+    // 「記録」中なら、練習記録には一切残さず画面だけに使う一時的なサンプルとして貯めておく。
+    // 目標音が選ばれていれば「最も近い音」ではなく、その固定の目標音との差(セント)で記録する
+    if (tunerRecordPhase === 'recording') {
+      let recCents = cents, recKey = key;
+      if (tunerRecordTargetKey) {
+        recCents = 1200 * Math.log2(freq / scalesData.notes[tunerRecordTargetKey].freq);
+        recKey   = tunerRecordTargetKey;
+      }
+      tunerRecordSamples.push({ t: performance.now() - tunerRecordStartTime, cents: recCents, freq, key: recKey });
+    }
   });
 }
 
@@ -1583,6 +2211,7 @@ function stopTuner() {
   document.getElementById('tunerStartBtn').style.display = 'block';
   document.getElementById('tunerStopBtn').style.display  = 'none';
   document.getElementById('tunerDisplay').style.display  = 'none';
+  stopTunerRecord();
 }
 
 // ズレ幅（セント）に応じて、メーターの針の位置と色を更新する
@@ -1605,6 +2234,187 @@ document.getElementById('tunerStartBtn').addEventListener('click', startTuner);
 document.getElementById('tunerStopBtn').addEventListener('click', stopTuner);
 
 // ===========================
+// チューナーの「5秒間記録」（検証・管理者用）
+// 「記録開始」→5秒カウントダウン→5秒間だけセントのズレを貯めて折れ線グラフで表示する。
+// あくまでその場で見るだけの一時的な機能で、練習記録（履歴・DB）には一切保存しない。
+// ===========================
+const TUNER_RECORD_COUNTDOWN_SEC  = 5;
+const TUNER_RECORD_DURATION_SEC_DEFAULT = 5;
+const TUNER_RECORD_DURATION_SEC_MIN     = 1;
+const TUNER_RECORD_DURATION_SEC_MAX     = 30;
+const TUNER_RECORD_CENTS_RANGE    = 50; // グラフの縦軸表示範囲(±セント)
+
+let tunerRecordPhase     = 'idle'; // 'idle' | 'countdown' | 'recording' | 'done'
+let tunerRecordSamples   = [];     // {t: 記録開始からの経過ms, cents, freq, key}
+let tunerRecordStartTime = null;   // 記録（計測）を開始したperformance.now()
+let tunerRecordTimer     = null;   // カウントダウン/残り秒数表示用のsetInterval
+let tunerRecordTimeout   = null;   // 記録時間経過で記録を終えるsetTimeout
+let tunerRecordTargetKey = null;   // 記録開始時に選ばれていた目標音のキー（未選択なら null=自動で最も近い音）
+let tunerRecordDurationMs = TUNER_RECORD_DURATION_SEC_DEFAULT * 1000; // 記録開始時に確定した記録時間(ms)
+
+// 目標音が選ばれていればその表示ラベル、未選択なら「自動」の説明文を返す
+function tunerRecordTargetLabel() {
+  return tunerRecordTargetKey
+    ? `${scalesData.notes[tunerRecordTargetKey].label}（${tunerRecordTargetKey}）`
+    : '自動（最も近い音）';
+}
+
+function startTunerRecord() {
+  if (tunerRecordPhase === 'countdown' || tunerRecordPhase === 'recording') return; // 二重起動防止
+  if (!tunerDetector) startTuner(); // マイクがまだ起動していなければ、あわせて起動する
+
+  tunerRecordTargetKey = document.getElementById('tunerTargetNote').value || null;
+
+  // 記録時間は範囲外の値が入力されていても1〜30秒に丸め、丸めた値を入力欄にも反映する
+  const durationInput = document.getElementById('tunerRecordDuration');
+  let durationSec = parseFloat(durationInput.value);
+  if (!Number.isFinite(durationSec)) durationSec = TUNER_RECORD_DURATION_SEC_DEFAULT;
+  durationSec = Math.min(TUNER_RECORD_DURATION_SEC_MAX, Math.max(TUNER_RECORD_DURATION_SEC_MIN, durationSec));
+  durationInput.value = durationSec;
+  tunerRecordDurationMs = durationSec * 1000;
+
+  document.getElementById('tunerRecordBtn').disabled = true;
+  document.getElementById('tunerTargetNote').disabled = true; // 計測中に目標音を変えられないようにする
+  durationInput.disabled = true; // 計測中に記録時間を変えられないようにする
+  document.getElementById('tunerRecordResult').style.display = 'none';
+  const statusEl = document.getElementById('tunerRecordStatus');
+  statusEl.style.display = 'block';
+
+  tunerRecordPhase = 'countdown';
+  let remaining = TUNER_RECORD_COUNTDOWN_SEC;
+  statusEl.textContent = `準備…${remaining}（目標：${tunerRecordTargetLabel()}）`;
+  tunerRecordTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      statusEl.textContent = `準備…${remaining}（目標：${tunerRecordTargetLabel()}）`;
+    } else {
+      clearInterval(tunerRecordTimer);
+      tunerRecordTimer = null;
+      beginTunerRecordCapture();
+    }
+  }, 1000);
+}
+
+function beginTunerRecordCapture() {
+  tunerRecordPhase     = 'recording';
+  tunerRecordSamples   = [];
+  tunerRecordStartTime = performance.now();
+
+  const statusEl = document.getElementById('tunerRecordStatus');
+  statusEl.textContent = `🔴 記録中…${Math.ceil(tunerRecordDurationMs / 1000)}（目標：${tunerRecordTargetLabel()}）`;
+
+  tunerRecordTimer = setInterval(() => {
+    const remainingMs = tunerRecordDurationMs - (performance.now() - tunerRecordStartTime);
+    statusEl.textContent = `🔴 記録中…${Math.max(0, Math.ceil(remainingMs / 1000))}（目標：${tunerRecordTargetLabel()}）`;
+  }, 200);
+
+  tunerRecordTimeout = setTimeout(finishTunerRecord, tunerRecordDurationMs);
+}
+
+function finishTunerRecord() {
+  if (tunerRecordTimer)   { clearInterval(tunerRecordTimer); tunerRecordTimer = null; }
+  tunerRecordTimeout = null;
+  tunerRecordPhase   = 'done';
+
+  document.getElementById('tunerRecordStatus').style.display = 'none';
+  document.getElementById('tunerRecordBtn').disabled = false;
+  document.getElementById('tunerTargetNote').disabled = false;
+  document.getElementById('tunerRecordDuration').disabled = false;
+
+  renderTunerRecordResult();
+}
+
+// 進行中のカウントダウン・記録・表示中の結果をすべて片付けて、ボタンを押す前の状態に戻す
+// （■停止でマイクを切ったときや、検証タブを離れたときに呼ばれる）
+function stopTunerRecord() {
+  if (tunerRecordTimer)   { clearInterval(tunerRecordTimer); tunerRecordTimer = null; }
+  if (tunerRecordTimeout) { clearTimeout(tunerRecordTimeout); tunerRecordTimeout = null; }
+  tunerRecordPhase   = 'idle';
+  tunerRecordSamples = [];
+  document.getElementById('tunerRecordBtn').disabled = false;
+  document.getElementById('tunerTargetNote').disabled = false;
+  document.getElementById('tunerRecordDuration').disabled = false;
+  document.getElementById('tunerRecordStatus').style.display = 'none';
+  document.getElementById('tunerRecordResult').style.display = 'none';
+}
+
+// 記録した秒数ぶんに貯めたサンプルから、セントのズレの推移を折れ線グラフで描き、平均・最小・最大を表示する
+function renderTunerRecordResult() {
+  document.getElementById('tunerRecordResult').style.display = 'block';
+  document.getElementById('tunerRecordTargetLabel').textContent = `目標音：${tunerRecordTargetLabel()}`;
+
+  const canvas = document.getElementById('tunerRecordCanvas');
+  const ctx    = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const avgEl = document.getElementById('tunerRecordAvg');
+  const minEl = document.getElementById('tunerRecordMin');
+  const maxEl = document.getElementById('tunerRecordMax');
+
+  const xForT     = (t)     => (t / tunerRecordDurationMs) * w;
+  const yForCents = (cents) => {
+    const clamped = Math.max(-TUNER_RECORD_CENTS_RANGE, Math.min(TUNER_RECORD_CENTS_RANGE, cents));
+    return h / 2 - (clamped / TUNER_RECORD_CENTS_RANGE) * (h / 2 - 10);
+  };
+
+  // 表示範囲は常に±50セント固定。10セント刻みで点線の目安線を引き、0セントの線だけ少し目立たせる
+  for (let c = -TUNER_RECORD_CENTS_RANGE; c <= TUNER_RECORD_CENTS_RANGE; c += 10) {
+    const y = yForCents(c);
+    ctx.strokeStyle = c === 0 ? 'rgba(232,196,104,0.45)' : 'rgba(232,196,104,0.2)';
+    ctx.setLineDash(c === 0 ? [4, 3] : [2, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // 縦軸の目安ラベル（-50 / 0 / +50）
+  ctx.fillStyle = 'rgba(194,167,140,0.8)';
+  ctx.font = '9px sans-serif';
+  ctx.textAlign = 'left';
+  [TUNER_RECORD_CENTS_RANGE, 0, -TUNER_RECORD_CENTS_RANGE].forEach(c => {
+    const y = yForCents(c);
+    const labelY = c === TUNER_RECORD_CENTS_RANGE ? y + 10 : y - 3;
+    ctx.fillText(`${c > 0 ? '+' : ''}${c}`, 4, labelY);
+  });
+
+  if (tunerRecordSamples.length === 0) {
+    avgEl.textContent = '--';
+    minEl.textContent = '--';
+    maxEl.textContent = '--';
+    ctx.fillStyle = 'rgba(194,167,140,0.8)';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('音が検出できませんでした', w / 2, h / 2);
+    return;
+  }
+
+  // セントのズレの推移（折れ線）
+  ctx.strokeStyle = '#e8c468';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  tunerRecordSamples.forEach((s, i) => {
+    const x = xForT(s.t), y = yForCents(s.cents);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  const centsList = tunerRecordSamples.map(s => s.cents);
+  const avg = centsList.reduce((a, b) => a + b, 0) / centsList.length;
+  const min = Math.min(...centsList);
+  const max = Math.max(...centsList);
+  const fmt = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}セント`;
+
+  avgEl.textContent = fmt(avg);
+  minEl.textContent = fmt(min);
+  maxEl.textContent = fmt(max);
+}
+
+document.getElementById('tunerRecordBtn').addEventListener('click', startTunerRecord);
+
+// ===========================
 // FFT周波数分析（検証・管理者用）
 // AnalyserNode.getByteFrequencyData()でブラウザ標準のFFTを使い、スペクトル（周波数ごとの強さ）を
 // キャンバスに描画する。fftSizeはチューナー等と同じ2048のままにし、
@@ -1614,10 +2424,14 @@ const FFT_SIZE     = 2048;
 const FFT_MIN_FREQ = 150;  // 表示範囲の下限(Hz)。ヴァイオリンの最低音(G3≈197Hz)より少し下から見せる
 const FFT_MAX_FREQ = 2000; // 表示範囲の上限(Hz)
 
-let fftAnalyser     = null;
-let fftAudioContext = null;
-let fftStream       = null;
-let fftAnimationId  = null;
+const FFT_FREEZE_MS = 5000; // 開始から何ミリ秒後にグラフを固定するか
+
+let fftAnalyser         = null;
+let fftAudioContext     = null;
+let fftStream           = null;
+let fftAnimationId      = null;
+let fftFreezeTimer      = null;
+let fftCountdownInterval = null;
 
 async function startFFT() {
   let stream;
@@ -1640,25 +2454,58 @@ async function startFFT() {
   document.getElementById('fftStartBtn').style.display = 'none';
   document.getElementById('fftStopBtn').style.display   = 'block';
   document.getElementById('fftDisplay').style.display   = 'block';
+  document.getElementById('fftStartBtn').textContent    = '▶ FFT分析を開始';
+
+  let remainingSec = Math.round(FFT_FREEZE_MS / 1000);
+  const statusEl = document.getElementById('fftStatus');
+  statusEl.textContent = `計測中…（あと${remainingSec}秒でグラフを固定します）`;
+  fftCountdownInterval = setInterval(() => {
+    remainingSec -= 1;
+    if (remainingSec > 0) statusEl.textContent = `計測中…（あと${remainingSec}秒でグラフを固定します）`;
+  }, 1000);
+  fftFreezeTimer = setTimeout(freezeFFT, FFT_FREEZE_MS);
 
   drawFFT();
 }
 
+// 計測開始からFFT_FREEZE_MS後に呼ばれ、その瞬間のスペクトルを固定表示してマイクを止める
+function freezeFFT() {
+  if (!fftAnalyser) return;
+
+  fftFreezeTimer = null;
+  if (fftCountdownInterval) { clearInterval(fftCountdownInterval); fftCountdownInterval = null; }
+  if (fftAnimationId)       { cancelAnimationFrame(fftAnimationId); fftAnimationId = null; }
+
+  renderFFTFrame(); // 止める直前の最新データを最後にもう一度描画して固定
+
+  if (fftStream)      { fftStream.getTracks().forEach(t => t.stop()); fftStream = null; }
+  if (fftAudioContext) { fftAudioContext.close(); fftAudioContext = null; }
+  fftAnalyser = null;
+
+  document.getElementById('fftStartBtn').style.display = 'block';
+  document.getElementById('fftStartBtn').textContent    = '↺ もう一度計測';
+  document.getElementById('fftStopBtn').style.display   = 'none';
+  document.getElementById('fftStatus').textContent = '5秒間で最大だった周波数を固定表示中です（赤色の位置）。';
+}
+
 function stopFFT() {
-  if (fftAnimationId) { cancelAnimationFrame(fftAnimationId); fftAnimationId = null; }
+  if (fftFreezeTimer)       { clearTimeout(fftFreezeTimer); fftFreezeTimer = null; }
+  if (fftCountdownInterval) { clearInterval(fftCountdownInterval); fftCountdownInterval = null; }
+  if (fftAnimationId)       { cancelAnimationFrame(fftAnimationId); fftAnimationId = null; }
   if (fftStream)       { fftStream.getTracks().forEach(t => t.stop()); fftStream = null; }
   if (fftAudioContext)  { fftAudioContext.close(); fftAudioContext = null; }
   fftAnalyser = null;
 
   document.getElementById('fftStartBtn').style.display = 'block';
+  document.getElementById('fftStartBtn').textContent    = '▶ FFT分析を開始';
   document.getElementById('fftStopBtn').style.display   = 'none';
   document.getElementById('fftDisplay').style.display   = 'none';
+  document.getElementById('fftStatus').textContent = '';
 }
 
-// 毎フレーム、スペクトルをキャンバスに描き直し、一番強いピークの周波数と最も近い音を表示する
-function drawFFT() {
-  if (!fftAnalyser) return;
-
+// 現在のスペクトルをキャンバスに描き、一番強いピークの周波数と最も近い音を表示する
+// （毎フレームのライブ描画にも、固定表示の最後の1回にも使う）
+function renderFFTFrame() {
   const bufferLength = fftAnalyser.frequencyBinCount; // fftSize/2
   const dataArray = new Uint8Array(bufferLength);
   fftAnalyser.getByteFrequencyData(dataArray);
@@ -1691,15 +2538,42 @@ function drawFFT() {
   // 無音・ノイズのときはピーク周波数を表示しない（閾値20/255は経験的な目安）
   const hasSignal = peakValue > 20;
   const peakFreq  = peakBin * binHz;
-  document.getElementById('fftPeakFreq').textContent = hasSignal ? `${peakFreq.toFixed(1)} Hz` : '-- Hz';
 
+  // 一番強かった周波数のバーを塗り直し、縦の目印線と数値ラベルを添えて一目でわかるようにする
+  if (hasSignal) {
+    const peakX = (peakBin - minBin) * barWidth;
+    const peakBarHeight = (peakValue / 255) * h;
+    ctx.fillStyle = '#ff6b4a';
+    ctx.fillRect(peakX, h - peakBarHeight, Math.max(2, barWidth), peakBarHeight);
+
+    ctx.strokeStyle = '#ff6b4a';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(peakX + barWidth / 2, 0);
+    ctx.lineTo(peakX + barWidth / 2, h - peakBarHeight);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#ff6b4a';
+    ctx.font = '11px sans-serif';
+    const label = `${peakFreq.toFixed(0)} Hz`;
+    const labelWidth = ctx.measureText(label).width;
+    const labelX = peakX < w - (labelWidth + 8) ? peakX + barWidth + 4 : peakX - labelWidth - 4;
+    ctx.fillText(label, Math.max(2, Math.min(w - labelWidth - 2, labelX)), 12);
+  }
+
+  document.getElementById('fftPeakFreq').textContent = hasSignal ? `${peakFreq.toFixed(1)} Hz` : '-- Hz';
   if (hasSignal) {
     const { key } = findNearestNote(peakFreq);
     document.getElementById('fftPeakNote').textContent = key ? `${scalesData.notes[key].label}（${key}）` : '--';
   } else {
     document.getElementById('fftPeakNote').textContent = '--';
   }
+}
 
+function drawFFT() {
+  if (!fftAnalyser) return;
+  renderFFTFrame();
   fftAnimationId = requestAnimationFrame(drawFFT);
 }
 
@@ -1708,9 +2582,21 @@ document.getElementById('fftStopBtn').addEventListener('click', stopFFT);
 
 // 管理者にだけ「被験者アカウント作成」カードを表示する（設定タブ）
 function initSubjectAccountCreation() {
-  document.getElementById('subjectAccountCard').style.display =
-    (currentUser && currentUser.role === 'admin') ? 'block' : 'none';
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  document.getElementById('subjectAccountCard').style.display = isAdmin ? 'block' : 'none';
 }
+
+// 被験者アカウントは自分では削除できないようにする（代わりに管理者が「記録」タブの
+// アカウント一覧から削除する）。被験者以外（管理者・一般アカウント）は従来通り自分で削除できる
+function initAccountDeletionUI() {
+  const isSubject = !!(currentUser && currentUser.is_subject === 'yes');
+  document.getElementById('deleteAccountBtn').style.display         = isSubject ? 'none' : '';
+  document.getElementById('subjectDeleteAccountNote').style.display = isSubject ? 'block' : 'none';
+}
+
+document.getElementById('subjectBpmRange').addEventListener('input', (e) => {
+  document.getElementById('subjectBpmValue').textContent = e.target.value;
+});
 
 // 管理者にだけ「新規アカウント作成」カードを表示し、現在の設定をラジオボタンに反映する
 function initSignupSetting() {
@@ -1738,6 +2624,36 @@ document.querySelectorAll('input[name="signupSetting"]').forEach(radio => {
       errorEl.textContent = err.message;
       errorEl.style.display = 'block';
       initSignupSetting(); // 失敗したら選択状態を元に戻す
+    }
+  });
+});
+
+// 管理者にだけ「1音ずつモードの正解判定（管理者以外への適用）」カードを表示し、
+// 現在の設定をラジオボタンに反映する
+function initStepHoldGeneralSetting() {
+  const card = document.getElementById('stepHoldGeneralSettingCard');
+  if (!currentUser || currentUser.role !== 'admin') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  document.querySelectorAll('input[name="stepHoldGeneralSetting"]').forEach(radio => {
+    radio.checked = radio.value === stepHoldGeneral;
+  });
+}
+
+// 管理者がこの設定を切り替えたら、サーバーに保存する（反映は次に練習を開始したときから）
+document.querySelectorAll('input[name="stepHoldGeneralSetting"]').forEach(radio => {
+  radio.addEventListener('change', async (e) => {
+    const errorEl = document.getElementById('stepHoldGeneralSettingError');
+    errorEl.style.display = 'none';
+    try {
+      await updateSettings({ step_hold_general: e.target.value });
+      stepHoldGeneral = e.target.value;
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.style.display = 'block';
+      initStepHoldGeneralSetting(); // 失敗したら選択状態を元に戻す
     }
   });
 });
@@ -2294,8 +3210,10 @@ document.getElementById('createSubjectAccountBtn').addEventListener('click', asy
   errorEl.style.display   = 'none';
   successEl.style.display = 'none';
 
-  const name     = document.getElementById('subjectName').value.trim();
-  const password = document.getElementById('subjectPassword').value;
+  const name      = document.getElementById('subjectName').value.trim();
+  const password  = document.getElementById('subjectPassword').value;
+  const direction = document.querySelector('input[name="subjectDirection"]:checked').value;
+  const bpm       = parseInt(document.getElementById('subjectBpmRange').value, 10);
   if (!name) {
     errorEl.textContent   = '名前を入力してください';
     errorEl.style.display = 'block';
@@ -2303,7 +3221,7 @@ document.getElementById('createSubjectAccountBtn').addEventListener('click', asy
   }
 
   try {
-    const created = await createProfile(name, password);
+    const created = await createProfile(name, password, { direction, bpm });
     document.getElementById('subjectName').value     = '';
     document.getElementById('subjectPassword').value = '';
     successEl.textContent   = `「${created.name}」を作成しました`;
@@ -2341,11 +3259,21 @@ async function onLoggedIn() {
   await loadScales();
   await loadAppSettings();
   initResultDisplaySetting();
+  initPassThresholdSetting();
+  initPitchToleranceSetting();
   initDemoModeUI();
   initVerifyTab();
+  initSubjectExperienceTab();
+  initAccountTab();
+  resetAdminOnlyPracticeSettings();
+  initPracticeSaveHistoryUI();
+  updateStepHoldModeVisibility();
   initSubjectAccountCreation();
+  initAccountDeletionUI();
   initSignupSetting();
+  initStepHoldGeneralSetting();
   initScaleBuilder();
+  await initSubjectPractice();
   await renderHistory();
   statsLoaded = false;
   switchTab('practice');
@@ -2374,11 +3302,20 @@ document.getElementById('guestBtn').addEventListener('click', async () => {
   document.getElementById('logoutBtn').textContent = '🚪 ログイン画面に戻る';
   document.getElementById('logoutBtn').title = 'ログイン画面に戻る';
   document.getElementById('demoTabBtn').style.display    = 'none';
+  document.getElementById('subjectExperienceTabBtn').style.display = 'none';
   document.getElementById('verifyTabBtn').style.display   = 'none';
   document.getElementById('statsTabBtn').style.display    = 'none';
+  document.getElementById('accountTabBtn').style.display  = 'none';
   document.getElementById('settingsTabBtn').style.display = 'none';
   document.getElementById('historySection').style.display = 'none';
   document.getElementById('guestNote').style.display = 'block';
+
+  // ゲストは管理者・被験者になり得ないので、この2つは必ず既定値に戻し、非表示にする
+  // （直前に同じタブで管理者・被験者が使っていた場合、選択状態がDOMに残ったままになるため）
+  resetAdminOnlyPracticeSettings();
+  document.getElementById('practiceSaveHistoryGroup').style.display = 'none';
+  document.getElementById('stepHoldModeGroup').style.display = 'none';
+  resetToNormalPracticeSetup();
 
   await loadScales();
   await loadAppSettings();

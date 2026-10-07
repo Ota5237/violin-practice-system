@@ -69,8 +69,10 @@
     <nav class="tab-nav">
       <button class="tab-btn active" data-tab="practice">練習</button>
       <button class="tab-btn" id="demoTabBtn" data-tab="demo" style="display:none">デモ</button>
+      <button class="tab-btn" id="subjectExperienceTabBtn" data-tab="subject-experience" style="display:none">検証モード</button>
       <button class="tab-btn" id="verifyTabBtn" data-tab="verify" style="display:none">検証</button>
       <button class="tab-btn" id="statsTabBtn" data-tab="stats">記録</button>
+      <button class="tab-btn" id="accountTabBtn" data-tab="account" style="display:none">アカウント</button>
       <button class="tab-btn" id="settingsTabBtn" data-tab="settings">設定</button>
     </nav>
     <p class="login-note login-note-center" id="guestNote" style="display:none">
@@ -87,7 +89,7 @@
       <section class="card" id="setupCard">
         <h2>練習設定</h2>
 
-        <div class="select-group">
+        <div class="select-group" id="categoryGroup">
           <label for="categorySelect">カテゴリーを選ぶ</label>
           <select id="categorySelect">
             <option value="first_position">第一ポジションの音階</option>
@@ -95,14 +97,14 @@
           </select>
         </div>
 
-        <div class="select-group">
+        <div class="select-group" id="scaleGroup">
           <label for="scaleSelect">調を選ぶ</label>
           <select id="scaleSelect">
             <option value="">-- 選択してください --</option>
           </select>
         </div>
 
-        <div class="select-group">
+        <div class="select-group" id="directionGroup">
           <label>練習タイプ</label>
           <div class="radio-group">
             <label><input type="radio" name="direction" value="up" checked> ▲ 上行</label>
@@ -112,7 +114,7 @@
           </div>
         </div>
 
-        <div class="select-group">
+        <div class="select-group" id="modeGroup">
           <label>練習モード</label>
           <div class="radio-group">
             <label><input type="radio" name="mode" value="step" checked>1音ずつ</label>
@@ -124,6 +126,40 @@
         <div class="select-group" id="bpmGroup" style="display:none">
           <label for="bpmRange">テンポ：<span id="bpmValue">60</span> BPM</label>
           <input type="range" id="bpmRange" min="40" max="120" value="60" step="4">
+        </div>
+
+        <div class="card subject-protocol-info" id="subjectProtocolInfo" style="display:none">
+          <h3>🧪 きまった練習を行います（音階 <span id="subjectProtocolStepNum">1</span>/<span id="subjectProtocolStepTotal">6</span>）</h3>
+          <div class="roadmap-track" id="subjectProtocolRoadmap"></div>
+          <p class="login-note">
+            音階「<strong id="subjectProtocolScale"></strong>」（<span id="subjectProtocolDirection"></span>）を
+            <strong id="subjectProtocolBpm"></strong> BPMのテンポで演奏します。
+            点数が合格基準（<strong id="subjectProtocolThreshold"></strong>点/100点）に届かない場合は、
+            間違えた音を1音ずつ練習してから、自動的にテンポ練習からやり直します。
+            合格すると、自動的に次の音階に進みます。
+          </p>
+        </div>
+
+        <div class="card subject-protocol-info" id="subjectRoadmapDoneInfo" style="display:none">
+          <h3>🎉 お疲れ様でした</h3>
+          <div class="roadmap-track" id="subjectRoadmapDoneTrack"></div>
+          <p class="login-note">6つの音階すべてに合格しました。これで練習は完了です。</p>
+        </div>
+
+        <div class="select-group" id="stepHoldModeGroup" style="display:none">
+          <label>正解判定方式（管理者用・1音ずつモード）</label>
+          <div class="radio-group">
+            <label><input type="radio" name="stepHoldMode" value="instant" checked> 瞬間で判定</label>
+            <label><input type="radio" name="stepHoldMode" value="hold">1秒間保持で判定</label>
+          </div>
+        </div>
+
+        <div class="select-group" id="practiceSaveHistoryGroup" style="display:none">
+          <label>この結果を記録に残すか（管理者用）</label>
+          <div class="radio-group">
+            <label><input type="radio" name="practiceSaveHistory" value="yes" checked> 記録する</label>
+            <label><input type="radio" name="practiceSaveHistory" value="no"> 記録しない</label>
+          </div>
         </div>
 
         <button id="startBtn" class="btn-primary" disabled>▶ 練習開始</button>
@@ -179,6 +215,9 @@
 
         <div class="result-freq" id="resultFreq">周波数: -- Hz</div>
         <div class="result-status" id="resultStatus"></div>
+        <div class="step-hold-meter" id="stepHoldMeter" style="display:none">
+          <div class="step-hold-meter-fill" id="stepHoldMeterFill"></div>
+        </div>
         <div class="fingering-info" id="fingeringInfo"></div>
         <div class="countdown" id="countdown" style="display:none"></div>
         <button id="stopBtn" class="btn-secondary">■ 練習を終了</button>
@@ -284,6 +323,40 @@
 
     </div>
 
+    <!-- ===== 検証モードタブ（管理者用。被験者フローを管理者自身で体験できる） ===== -->
+    <div id="tab-subject-experience" class="tab-content" style="display:none">
+
+      <section class="card" id="subjectExperienceCard">
+        <h2>🧪 検証モード（管理者用）</h2>
+        <p class="login-note">
+          被験者に割り当てる決まった練習（音階6つのロードマップ）を、管理者自身のアカウントでその場から試せます。
+          練習タイプ・テンポは「設定」タブの被験者アカウント作成欄で指定した内容がそのまま使われます。
+        </p>
+
+        <div class="card subject-protocol-info" id="subjectExperienceInfo" style="display:none">
+          <h3>🧪 きまった練習を行います（音階 <span id="subjectExperienceStepNum">1</span>/<span id="subjectExperienceStepTotal">6</span>）</h3>
+          <div class="roadmap-track" id="subjectExperienceRoadmap"></div>
+          <p class="login-note">
+            音階「<strong id="subjectExperienceScale"></strong>」（<span id="subjectExperienceDirection"></span>）を
+            <strong id="subjectExperienceBpm"></strong> BPMのテンポで演奏します。
+            点数が合格基準（<strong id="subjectExperienceThreshold"></strong>点/100点）に届かない場合は、
+            間違えた音を1音ずつ練習してから、自動的にテンポ練習からやり直します。
+            合格すると、自動的に次の音階に進みます。
+          </p>
+        </div>
+
+        <div class="card subject-protocol-info" id="subjectExperienceDoneInfo" style="display:none">
+          <h3>🎉 お疲れ様でした</h3>
+          <div class="roadmap-track" id="subjectExperienceDoneTrack"></div>
+          <p class="login-note">6つの音階すべてに合格しました。これで体験は完了です。</p>
+        </div>
+
+        <p class="login-error" id="subjectExperienceError" style="display:none"></p>
+        <button type="button" class="btn-primary" id="startSubjectExperienceBtn">▶ 体験を開始する</button>
+      </section>
+
+    </div>
+
     <!-- ===== 検証タブ（管理者用） ===== -->
     <div id="tab-verify" class="tab-content" style="display:none">
 
@@ -309,6 +382,30 @@
             <div class="tuner-cents" id="tunerCentsText">0セント</div>
           </div>
         </div>
+
+        <h3 class="tuner-record-heading">⏺ 記録</h3>
+        <p class="login-note">ボタンを押すと5秒のカウントダウンのあと、指定した秒数だけ計測し、そのあいだのズレ幅（セント）の推移をグラフで表示します。練習記録には一切保存されません。</p>
+        <div class="select-group">
+          <label for="tunerTargetNote">目標音（検証したい音を選ぶ）</label>
+          <select id="tunerTargetNote">
+            <option value="">-- 自動（検出した音の中で最も近い音） --</option>
+          </select>
+        </div>
+        <div class="select-group">
+          <label for="tunerRecordDuration">記録時間（秒）</label>
+          <input type="number" id="tunerRecordDuration" value="5" min="1" max="30" step="1">
+        </div>
+        <button type="button" class="btn-secondary" id="tunerRecordBtn">⏺ 記録開始</button>
+        <div class="tuner-record-status" id="tunerRecordStatus" style="display:none"></div>
+        <div class="tuner-record-result" id="tunerRecordResult" style="display:none">
+          <div class="tuner-record-target" id="tunerRecordTargetLabel"></div>
+          <canvas id="tunerRecordCanvas" width="460" height="160" class="tuner-record-canvas"></canvas>
+          <div class="tuner-record-stats">
+            <span>平均：<strong id="tunerRecordAvg">--</strong></span>
+            <span>最小：<strong id="tunerRecordMin">--</strong></span>
+            <span>最大：<strong id="tunerRecordMax">--</strong></span>
+          </div>
+        </div>
       </section>
 
       <section class="card" id="fftCard">
@@ -317,12 +414,14 @@
           マイクの音をFFT（高速フーリエ変換）で周波数領域に変換し、スペクトル（周波数ごとの強さ）を表示します。
           fftSize=2048で計算しているため、1目盛りの分解能はサンプルレート44100Hz時で約21.5Hzです
           （自己相関を使ったチューナーより粗い分解能になる点を、実際のスペクトルで確認できます）。
+          開始すると5秒間計測し、その時点のグラフを固定して一番強かった周波数を赤色で表示します。
         </p>
 
         <button type="button" class="btn-primary" id="fftStartBtn">▶ FFT分析を開始</button>
         <button type="button" class="btn-secondary" id="fftStopBtn" style="display:none">■ 停止</button>
 
         <div id="fftDisplay" style="display:none">
+          <div class="fft-status" id="fftStatus"></div>
           <canvas id="fftCanvas" width="460" height="200" class="fft-canvas"></canvas>
           <div class="fft-axis-labels">
             <span id="fftAxisMin">150 Hz</span>
@@ -339,19 +438,6 @@
 
     <!-- ===== 記録・グラフタブ ===== -->
     <div id="tab-stats" class="tab-content" style="display:none">
-
-      <!-- アカウント一覧（管理者のみ） -->
-      <section class="card" id="accountListCard" style="display:none">
-        <h2>📋 アカウント一覧</h2>
-        <div class="compare-table-wrap">
-          <table class="compare-table" id="accountListTable">
-            <thead>
-              <tr><th>ID</th><th>名前</th><th>権限</th><th>作成日</th></tr>
-            </thead>
-            <tbody id="accountListTableBody"></tbody>
-          </table>
-        </div>
-      </section>
 
       <section class="card">
         <h2>📈 正答率の推移</h2>
@@ -391,12 +477,64 @@
 
     </div>
 
+    <!-- ===== アカウントタブ（管理者のみ） ===== -->
+    <div id="tab-account" class="tab-content" style="display:none">
+
+      <section class="card" id="accountListCard" style="display:none">
+        <h2>📋 アカウント一覧</h2>
+        <p class="login-note">行をクリックすると、そのアカウントの履歴・記録を「記録」タブで確認できます。</p>
+        <div class="compare-table-wrap">
+          <table class="compare-table" id="accountListTable">
+            <thead>
+              <tr><th>ID</th><th>名前</th><th>権限</th><th>作成日</th><th>操作</th></tr>
+            </thead>
+            <tbody id="accountListTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" id="subjectRoadmapEditCard" style="display:none">
+        <h2>🎼 音階ロードマップを編集：<span id="roadmapEditAccountName"></span></h2>
+        <p class="login-note">
+          この被験者が練習する6つの音階を変更できます。方向・テンポは6つ共通です。
+          保存すると、進捗（現在のステップ）は最初からやり直しになります。
+        </p>
+
+        <div class="select-group">
+          <label>練習タイプ（6音階共通）</label>
+          <div class="radio-group">
+            <label><input type="radio" name="roadmapEditDirection" value="up" checked> ▲ 上行</label>
+            <label><input type="radio" name="roadmapEditDirection" value="down"> ▼ 下行</label>
+            <label><input type="radio" name="roadmapEditDirection" value="updown"> ▲▼ 上下</label>
+            <label><input type="radio" name="roadmapEditDirection" value="arpeggio"> 🎵 アルペジオ</label>
+          </div>
+        </div>
+        <div class="select-group">
+          <label for="roadmapEditBpmRange">テンポ（6音階共通）：<span id="roadmapEditBpmValue">60</span> BPM</label>
+          <input type="range" id="roadmapEditBpmRange" min="40" max="120" value="60" step="4">
+        </div>
+
+        <div id="roadmapEditStepList"></div>
+
+        <p class="login-error" id="roadmapEditError" style="display:none"></p>
+        <p class="settings-success-msg" id="roadmapEditSuccess" style="display:none"></p>
+        <button type="button" class="btn-primary" id="roadmapEditSaveBtn">保存する</button>
+        <button type="button" class="btn-secondary" id="roadmapEditCancelBtn">キャンセル</button>
+      </section>
+
+    </div>
+
     <!-- ===== 設定タブ ===== -->
     <div id="tab-settings" class="tab-content" style="display:none">
 
       <section class="card" id="subjectAccountCard" style="display:none">
         <h2>🧪 被験者アカウント作成（管理者用）</h2>
-        <p class="login-note">研究の被験者用アカウントを作成します。作成しても管理者自身のログイン状態は変わりません。</p>
+        <p class="login-note">
+          研究の被験者用アカウントを作成します。被験者には音階6つを順番に練習するロードマップが割り当てられ、
+          各音階に合格すると次の音階に進みます（音階はまだ研究用に決まっていないため、登録済みの音階から仮に割り当てます）。
+          作成しても管理者自身のログイン状態は変わりません。
+          下で決めた練習タイプ・テンポは、「検証モード」タブから管理者自身のアカウントでも試せます。
+        </p>
         <div class="select-group">
           <label for="subjectName">名前</label>
           <input type="text" id="subjectName" autocomplete="off">
@@ -405,9 +543,25 @@
           <label for="subjectPassword">パスワード（4文字以上）</label>
           <input type="password" id="subjectPassword" autocomplete="new-password">
         </div>
+
+        <p class="login-note">6音階すべてに共通の、練習タイプとテンポを決めてください。被験者本人はこの内容を選べません。</p>
+        <div class="select-group">
+          <label>練習タイプ</label>
+          <div class="radio-group">
+            <label><input type="radio" name="subjectDirection" value="up" checked> ▲ 上行</label>
+            <label><input type="radio" name="subjectDirection" value="down"> ▼ 下行</label>
+            <label><input type="radio" name="subjectDirection" value="updown"> ▲▼ 上下</label>
+            <label><input type="radio" name="subjectDirection" value="arpeggio"> 🎵 アルペジオ</label>
+          </div>
+        </div>
+        <div class="select-group">
+          <label for="subjectBpmRange">テンポ：<span id="subjectBpmValue">60</span> BPM</label>
+          <input type="range" id="subjectBpmRange" min="40" max="120" value="60" step="4">
+        </div>
+
         <p class="login-error" id="subjectAccountError" style="display:none"></p>
         <p class="settings-success-msg" id="subjectAccountSuccess" style="display:none"></p>
-        <button id="createSubjectAccountBtn" class="btn-primary">作成する</button>
+        <button id="createSubjectAccountBtn" class="btn-primary">アカウントを作成する</button>
       </section>
 
       <section class="card" id="scaleBuilderCard" style="display:none">
@@ -539,6 +693,45 @@
         <p class="login-error" id="resultDisplaySettingError" style="display:none"></p>
       </section>
 
+      <section class="card" id="passThresholdSettingCard" style="display:none">
+        <h2>🎯 被験者練習の合格基準（管理者用）</h2>
+        <p class="login-note">被験者アカウントがテンポ練習で合格とみなされる点数（100点満点）を設定します。届かない場合は、間違えた音を1音ずつ練習してから自動的にテンポ練習をやり直します。</p>
+        <div class="select-group">
+          <label for="passThresholdInput">合格基準：<span id="passThresholdValue">80</span>点</label>
+          <input type="range" id="passThresholdInput" min="1" max="100" value="80" step="1">
+        </div>
+        <p class="login-error" id="passThresholdError" style="display:none"></p>
+      </section>
+
+      <section class="card" id="pitchToleranceSettingCard" style="display:none">
+        <h2>🎯 正解判定の許容誤差（管理者用）</h2>
+        <p class="login-note">
+          演奏した音程が、目標音から何セント以内なら「正解」「惜しい」と判定するかを設定します。
+          1音ずつモード・テンポモード・点数計算のすべてに反映されます。
+        </p>
+        <div class="select-group">
+          <label for="correctCentsInput">正解の許容誤差（セント以内）</label>
+          <input type="number" id="correctCentsInput" min="1" max="100" step="1" value="15">
+        </div>
+        <div class="select-group">
+          <label for="closeCentsInput">惜しいの許容誤差（セント以内）</label>
+          <input type="number" id="closeCentsInput" min="1" max="100" step="1" value="35">
+        </div>
+        <p class="login-error" id="pitchToleranceError" style="display:none"></p>
+      </section>
+
+      <section class="card" id="stepHoldGeneralSettingCard" style="display:none">
+        <h2>🎯 1音ずつモードの正解判定（管理者用）</h2>
+        <p class="login-note">管理者以外のアカウントでも、1音ずつモードで「1秒間保持で判定」を使うようにするか選べます。「瞬間で判定」の場合、管理者以外は従来通り一瞬合っただけで正解になります。</p>
+        <div class="select-group">
+          <div class="radio-group">
+            <label><input type="radio" name="stepHoldGeneralSetting" value="no" checked> 瞬間で判定（従来通り）</label>
+            <label><input type="radio" name="stepHoldGeneralSetting" value="yes">1秒間保持で判定</label>
+          </div>
+        </div>
+        <p class="login-error" id="stepHoldGeneralSettingError" style="display:none"></p>
+      </section>
+
       <section class="card" id="accountCard">
         <h2>⚙️ アカウント設定</h2>
         <button id="showChangePasswordBtn" class="btn-secondary">パスワードを変更</button>
@@ -555,6 +748,9 @@
           <button id="submitChangePasswordBtn" class="btn-primary">変更する</button>
         </div>
         <button id="deleteAccountBtn" class="btn-danger btn-sm">アカウントを削除</button>
+        <p class="login-note" id="subjectDeleteAccountNote" style="display:none">
+          被験者アカウントは自分では削除できません。削除が必要な場合は管理者にお伝えください。
+        </p>
       </section>
 
     </div>

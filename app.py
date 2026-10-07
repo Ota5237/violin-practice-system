@@ -18,6 +18,8 @@ CATEGORY_LABELS = {
     'two_octave':      '2オクターブの音階',
 }
 VALID_STRINGS = {'G弦', 'D弦', 'A弦', 'E弦'}
+VALID_DIRECTIONS = {'up', 'down', 'updown', 'arpeggio'}
+SUBJECT_ROADMAP_LENGTH = 6  # 被験者に練習してもらう音階の数（ロードマップのステップ数）
 
 # 音階データに含まれる音名(note)が、周波数対応表(notes.json)に実在するキーかを検証するために読み込む
 def get_valid_note_keys():
@@ -84,7 +86,11 @@ def init_db():
             CREATE TABLE IF NOT EXISTS app_settings (
                 id                  INTEGER PRIMARY KEY CHECK (id = 1),
                 result_display_mode TEXT NOT NULL DEFAULT 'accuracy',
-                signup_enabled      TEXT NOT NULL DEFAULT 'yes'
+                signup_enabled      TEXT NOT NULL DEFAULT 'yes',
+                step_hold_general   TEXT NOT NULL DEFAULT 'no',
+                pass_threshold      INTEGER NOT NULL DEFAULT 80,
+                correct_cents       INTEGER NOT NULL DEFAULT 15,
+                close_cents         INTEGER NOT NULL DEFAULT 35
             )
         ''')
         existing_settings_cols = {row[1] for row in conn.execute('PRAGMA table_info(app_settings)')}
@@ -92,6 +98,14 @@ def init_db():
             conn.execute("ALTER TABLE app_settings ADD COLUMN result_display_mode TEXT NOT NULL DEFAULT 'accuracy'")
         if 'signup_enabled' not in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings ADD COLUMN signup_enabled TEXT NOT NULL DEFAULT 'yes'")
+        if 'step_hold_general' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN step_hold_general TEXT NOT NULL DEFAULT 'no'")
+        if 'pass_threshold' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN pass_threshold INTEGER NOT NULL DEFAULT 80")
+        if 'correct_cents' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN correct_cents INTEGER NOT NULL DEFAULT 15")
+        if 'close_cents' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN close_cents INTEGER NOT NULL DEFAULT 35")
         if 'note_display_mode' in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings DROP COLUMN note_display_mode")
         conn.execute('''
@@ -121,6 +135,8 @@ def init_db():
         profile_migrations = {
             'password_hash': "ALTER TABLE profiles ADD COLUMN password_hash TEXT",
             'role':          "ALTER TABLE profiles ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+            'is_subject':    "ALTER TABLE profiles ADD COLUMN is_subject TEXT NOT NULL DEFAULT 'no'",
+            'subject_step_index': "ALTER TABLE profiles ADD COLUMN subject_step_index INTEGER NOT NULL DEFAULT 0",
         }
         for col, ddl in profile_migrations.items():
             if col not in existing_profile_cols:
@@ -174,6 +190,23 @@ def init_db():
                         )
                     )
 
+        # 被験者アカウントに割り当てる、決まった練習の「ロードマップ」（音階6つを順番に練習する）。
+        # 各ステップ（step_order = 0〜5）は、音階・方向・テンポを持つ。被験者はこの内容を
+        # 自分で選ばず、各ステップでテンポ練習→（不合格なら）1音ずつ練習→再テンポ練習…を
+        # 合格するまで繰り返し、合格したら次のステップ（次の音階）に進む
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS subject_assignment_steps (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id    INTEGER NOT NULL,
+                step_order    INTEGER NOT NULL,
+                category_key  TEXT    NOT NULL,
+                scale_id      INTEGER NOT NULL,
+                direction     TEXT    NOT NULL,
+                bpm           INTEGER NOT NULL,
+                updated_at    TEXT    NOT NULL
+            )
+        ''')
+
         conn.commit()
 
 # ===== 認証まわりのヘルパー =====
@@ -223,7 +256,9 @@ def login():
     session.permanent = True
     session['profile_id'] = profile['id']
     session['role']       = profile['role']
-    return jsonify({'id': profile['id'], 'name': profile['name'], 'role': profile['role']}), 200
+    return jsonify({
+        'id': profile['id'], 'name': profile['name'], 'role': profile['role'], 'is_subject': profile['is_subject']
+    }), 200
 
 # ===== 初回パスワード設定（password_hashがまだ無いアカウント専用） =====
 @app.route('/api/set-password', methods=['POST'])
@@ -250,7 +285,9 @@ def set_password():
     session.permanent = True
     session['profile_id'] = profile['id']
     session['role']       = profile['role']
-    return jsonify({'id': profile['id'], 'name': profile['name'], 'role': profile['role']}), 200
+    return jsonify({
+        'id': profile['id'], 'name': profile['name'], 'role': profile['role'], 'is_subject': profile['is_subject']
+    }), 200
 
 # ===== ログアウト =====
 @app.route('/api/logout', methods=['POST'])
@@ -266,7 +303,7 @@ def me():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         profile = conn.execute(
-            'SELECT id, name, role FROM profiles WHERE id = ?', (session['profile_id'],)
+            'SELECT id, name, role, is_subject FROM profiles WHERE id = ?', (session['profile_id'],)
         ).fetchone()
     if profile is None:
         session.clear()
@@ -280,10 +317,15 @@ def get_settings():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            'SELECT result_display_mode, signup_enabled FROM app_settings WHERE id = 1'
+            'SELECT result_display_mode, signup_enabled, step_hold_general, pass_threshold, '
+            'correct_cents, close_cents FROM app_settings WHERE id = 1'
         ).fetchone()
     if row is None:
-        return jsonify({'result_display_mode': 'accuracy', 'signup_enabled': 'yes'})
+        return jsonify({
+            'result_display_mode': 'accuracy', 'signup_enabled': 'yes',
+            'step_hold_general': 'no', 'pass_threshold': 80,
+            'correct_cents': 15, 'close_cents': 35
+        })
     return jsonify(dict(row))
 
 # ===== アプリ全体の設定を変更（管理者のみ）。渡された項目だけ更新する =====
@@ -306,16 +348,59 @@ def update_settings():
             return jsonify({'error': 'signup_enabledはyesかnoで指定してください'}), 400
         updates['signup_enabled'] = data['signup_enabled']
 
+    if 'step_hold_general' in data:
+        if data['step_hold_general'] not in ('yes', 'no'):
+            return jsonify({'error': 'step_hold_generalはyesかnoで指定してください'}), 400
+        updates['step_hold_general'] = data['step_hold_general']
+
+    if 'pass_threshold' in data:
+        try:
+            threshold = int(data['pass_threshold'])
+        except (TypeError, ValueError):
+            return jsonify({'error': 'pass_thresholdは1〜100の整数で指定してください'}), 400
+        if not (1 <= threshold <= 100):
+            return jsonify({'error': 'pass_thresholdは1〜100の整数で指定してください'}), 400
+        updates['pass_threshold'] = threshold
+
+    # 「正解」「惜しい」の許容誤差（セント）。1音ずつ・テンポ・点数計算のすべてでこの2つの値を使う
+    if 'correct_cents' in data:
+        try:
+            correct_cents = int(data['correct_cents'])
+        except (TypeError, ValueError):
+            return jsonify({'error': 'correct_centsは1〜100の整数で指定してください'}), 400
+        if not (1 <= correct_cents <= 100):
+            return jsonify({'error': 'correct_centsは1〜100の整数で指定してください'}), 400
+        updates['correct_cents'] = correct_cents
+
+    if 'close_cents' in data:
+        try:
+            close_cents = int(data['close_cents'])
+        except (TypeError, ValueError):
+            return jsonify({'error': 'close_centsは1〜100の整数で指定してください'}), 400
+        if not (1 <= close_cents <= 100):
+            return jsonify({'error': 'close_centsは1〜100の整数で指定してください'}), 400
+        updates['close_cents'] = close_cents
+
     if not updates:
         return jsonify({'error': '更新する項目がありません'}), 400
 
     with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        # 「惜しい」は「正解」より狭くならないようにする（両方同時指定・片方のみ指定のどちらでも、
+        # 既存値と組み合わせた実際の値同士で比較する）
+        if 'correct_cents' in updates or 'close_cents' in updates:
+            current = conn.execute('SELECT correct_cents, close_cents FROM app_settings WHERE id = 1').fetchone()
+            effective_correct = updates.get('correct_cents', current['correct_cents'] if current else 15)
+            effective_close   = updates.get('close_cents', current['close_cents'] if current else 35)
+            if effective_close < effective_correct:
+                return jsonify({'error': '「惜しい」の許容誤差は「正解」の許容誤差以上にしてください'}), 400
+
         set_clause = ', '.join(f'{col} = ?' for col in updates)  # updatesのキーは上のホワイトリストのみ
         conn.execute(f'UPDATE app_settings SET {set_clause} WHERE id = 1', tuple(updates.values()))
         conn.commit()
-        conn.row_factory = sqlite3.Row
         row = conn.execute(
-            'SELECT result_display_mode, signup_enabled FROM app_settings WHERE id = 1'
+            'SELECT result_display_mode, signup_enabled, step_hold_general, pass_threshold, '
+            'correct_cents, close_cents FROM app_settings WHERE id = 1'
         ).fetchone()
 
     return jsonify(dict(row)), 200
@@ -349,10 +434,10 @@ def get_profiles():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         if session.get('role') == 'admin':
-            rows = conn.execute('SELECT id, name, role, created_at FROM profiles ORDER BY id').fetchall()
+            rows = conn.execute('SELECT id, name, role, is_subject, created_at FROM profiles ORDER BY id').fetchall()
         else:
             rows = conn.execute(
-                'SELECT id, name, role, created_at FROM profiles WHERE id = ?', (session['profile_id'],)
+                'SELECT id, name, role, is_subject, created_at FROM profiles WHERE id = ?', (session['profile_id'],)
             ).fetchall()
     return jsonify([dict(row) for row in rows])
 
@@ -380,15 +465,52 @@ def create_profile():
         if row is not None and row[0] == 'no':
             return jsonify({'error': '新規アカウント作成は現在許可されていません'}), 403
 
+    # 管理者が代理作成する場合は「被験者アカウント」として登録し、決まった練習の
+    # ロードマップ（音階SUBJECT_ROADMAP_LENGTH個を順番に練習）を組み立てる。
+    # 被験者はこの内容を自分では選べず、各音階でテンポ練習→（不合格なら）1音ずつ練習→
+    # 再テンポ練習…を合格するまで繰り返し、合格したら次の音階に進む。
+    # 音階そのものはまだ研究用に決まっていないため、登録済みの音階から仮に選ぶ
+    # （方向・テンポは管理者が指定し、6音階すべてに共通で使う）
+    roadmap_steps = None
+    if is_admin_request:
+        direction = data.get('direction')
+        if direction not in VALID_DIRECTIONS:
+            return jsonify({'error': '不正な練習タイプです'}), 400
+        try:
+            bpm = int(data.get('bpm'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'テンポを指定してください'}), 400
+        if not (40 <= bpm <= 120):
+            return jsonify({'error': 'テンポは40〜120の範囲で指定してください'}), 400
+
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            scale_rows = conn.execute('SELECT id, category_key FROM scales ORDER BY id').fetchall()
+        if not scale_rows:
+            return jsonify({'error': '音階が1つも登録されていません。先に「設定」から音階を追加してください'}), 400
+
+        # 登録済みの音階が6個未満の場合は、先頭から繰り返して6ステップ分埋める（仮の割り当てのため）
+        roadmap_steps = [
+            (i, scale_rows[i % len(scale_rows)]['category_key'], scale_rows[i % len(scale_rows)]['id'], direction, bpm)
+            for i in range(SUBJECT_ROADMAP_LENGTH)
+        ]
+
     created_at = datetime.now().strftime('%Y/%m/%d %H:%M')
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.execute(
-                'INSERT INTO profiles (name, created_at, password_hash, role) VALUES (?, ?, ?, ?)',
-                (name, created_at, generate_password_hash(password), 'user')
+                'INSERT INTO profiles (name, created_at, password_hash, role, is_subject) VALUES (?, ?, ?, ?, ?)',
+                (name, created_at, generate_password_hash(password), 'user', 'yes' if is_admin_request else 'no')
             )
-            conn.commit()
             profile_id = cur.lastrowid
+            if roadmap_steps:
+                conn.executemany(
+                    'INSERT INTO subject_assignment_steps '
+                    '(profile_id, step_order, category_key, scale_id, direction, bpm, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [(profile_id,) + step + (created_at,) for step in roadmap_steps]
+                )
+            conn.commit()
     except sqlite3.IntegrityError:
         return jsonify({'error': 'その名前は既に使われています'}), 409
 
@@ -397,7 +519,10 @@ def create_profile():
         session.permanent = True
         session['profile_id'] = profile_id
         session['role']       = 'user'
-    return jsonify({'id': profile_id, 'name': name, 'role': 'user', 'created_at': created_at}), 201
+    return jsonify({
+        'id': profile_id, 'name': name, 'role': 'user', 'created_at': created_at,
+        'is_subject': 'yes' if is_admin_request else 'no'
+    }), 201
 
 # ===== アカウント削除（本人か管理者のみ） =====
 @app.route('/api/profiles/<int:profile_id>', methods=['DELETE'])
@@ -405,6 +530,15 @@ def create_profile():
 def delete_profile(profile_id):
     if not can_access_profile(profile_id):
         return jsonify({'error': '権限がありません'}), 403
+
+    # 被験者アカウントは自分では削除できない（研究データを誤って・意図的に消されないように）。
+    # 削除が必要な場合は管理者が行う
+    is_self_delete = session.get('profile_id') == profile_id
+    if is_self_delete and session.get('role') != 'admin':
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute('SELECT is_subject FROM profiles WHERE id = ?', (profile_id,)).fetchone()
+        if row and row[0] == 'yes':
+            return jsonify({'error': '被験者アカウントは自分では削除できません。管理者に削除を依頼してください'}), 403
 
     with sqlite3.connect(DB_PATH) as conn:
         count = conn.execute('SELECT COUNT(*) FROM profiles').fetchone()[0]
@@ -588,6 +722,118 @@ def get_note_stats():
         'by_note':   [dict(r) for r in by_note],
         'by_string': [dict(r) for r in by_string]
     })
+
+# ===== 被験者アカウントに割り当てられた練習ロードマップ（音階SUBJECT_ROADMAP_LENGTH個のステップ）を取得 =====
+# 被験者本人、または管理者（他人の分も含む）が閲覧できる。
+# 現在どのステップまで進んでいるか（current_step）もあわせて返す
+@app.route('/api/subject-assignment', methods=['GET'])
+@login_required
+def get_subject_assignment():
+    profile_id = request.args.get('profile_id', type=int, default=session['profile_id'])
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        steps = conn.execute(
+            'SELECT step_order, category_key, scale_id, direction, bpm FROM subject_assignment_steps '
+            'WHERE profile_id = ? ORDER BY step_order',
+            (profile_id,)
+        ).fetchall()
+        profile_row = conn.execute(
+            'SELECT subject_step_index FROM profiles WHERE id = ?', (profile_id,)
+        ).fetchone()
+
+    if not steps:
+        return jsonify({'error': '練習内容が割り当てられていません'}), 404
+    return jsonify({
+        'steps': [dict(s) for s in steps],
+        'current_step': profile_row[0] if profile_row else 0
+    })
+
+# ===== 被験者の練習ロードマップ（音階6つ）を管理者が変更する =====
+# 音階はまだ研究用に決まっていないため、作成時は仮のものを割り当てている。
+# ここから、各ステップの音階（カテゴリー・調）と、6ステップ共通の方向・テンポを変更できる。
+# 内容が変わるため、進捗（現在のステップ）は0に戻す
+@app.route('/api/subject-assignment/<int:profile_id>', methods=['PUT'])
+@login_required
+def update_subject_assignment(profile_id):
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profile = conn.execute('SELECT is_subject FROM profiles WHERE id = ?', (profile_id,)).fetchone()
+    if profile is None:
+        return jsonify({'error': '指定されたアカウントが見つかりません'}), 404
+    if profile['is_subject'] != 'yes':
+        return jsonify({'error': '被験者アカウントではありません'}), 400
+
+    data      = request.get_json() or {}
+    direction = data.get('direction')
+    if direction not in VALID_DIRECTIONS:
+        return jsonify({'error': '不正な練習タイプです'}), 400
+    try:
+        bpm = int(data.get('bpm'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'テンポを指定してください'}), 400
+    if not (40 <= bpm <= 120):
+        return jsonify({'error': 'テンポは40〜120の範囲で指定してください'}), 400
+
+    steps_in = data.get('steps')
+    if not isinstance(steps_in, list) or len(steps_in) != SUBJECT_ROADMAP_LENGTH:
+        return jsonify({'error': f'音階は{SUBJECT_ROADMAP_LENGTH}個指定してください'}), 400
+
+    validated_steps = []
+    with sqlite3.connect(DB_PATH) as conn:
+        for step in steps_in:
+            category_key = step.get('category_key') if isinstance(step, dict) else None
+            if category_key not in CATEGORY_LABELS:
+                return jsonify({'error': '不正なカテゴリーです'}), 400
+            try:
+                scale_id = int(step.get('scale_id'))
+            except (TypeError, ValueError):
+                return jsonify({'error': '音階を指定してください'}), 400
+            scale_row = conn.execute(
+                'SELECT id FROM scales WHERE id = ? AND category_key = ?', (scale_id, category_key)
+            ).fetchone()
+            if scale_row is None:
+                return jsonify({'error': '指定された音階が見つかりません'}), 400
+            validated_steps.append((category_key, scale_id))
+
+    updated_at = datetime.now().strftime('%Y/%m/%d %H:%M')
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('DELETE FROM subject_assignment_steps WHERE profile_id = ?', (profile_id,))
+        conn.executemany(
+            'INSERT INTO subject_assignment_steps '
+            '(profile_id, step_order, category_key, scale_id, direction, bpm, updated_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [(profile_id, i, cat, sid, direction, bpm, updated_at) for i, (cat, sid) in enumerate(validated_steps)]
+        )
+        conn.execute('UPDATE profiles SET subject_step_index = 0 WHERE id = ?', (profile_id,))
+        conn.commit()
+
+    return jsonify({'message': 'updated'}), 200
+
+# ===== 被験者ロードマップを1ステップ進める（現在のステップに合格したとき） =====
+# 必ず本人のアカウントに対してのみ進められる（他人の進捗を操作できないように）
+@app.route('/api/subject-progress/advance', methods=['POST'])
+@login_required
+def advance_subject_progress():
+    profile_id = session['profile_id']
+
+    with sqlite3.connect(DB_PATH) as conn:
+        step_count = conn.execute(
+            'SELECT COUNT(*) FROM subject_assignment_steps WHERE profile_id = ?', (profile_id,)
+        ).fetchone()[0]
+        current = conn.execute(
+            'SELECT subject_step_index FROM profiles WHERE id = ?', (profile_id,)
+        ).fetchone()[0]
+        new_index = min(current + 1, step_count)
+        conn.execute('UPDATE profiles SET subject_step_index = ? WHERE id = ?', (new_index, profile_id))
+        conn.commit()
+
+    return jsonify({'current_step': new_index, 'total_steps': step_count}), 200
 
 # ===== 音階（調）一覧を取得 =====
 # 練習画面のセレクトボックスに使うため、誰でも読める（ログイン不要）
