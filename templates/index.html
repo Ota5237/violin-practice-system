@@ -104,6 +104,7 @@
           </div>
           <!-- 五線譜トグルボタン -->
           <div class="staff-opts-row" id="staffOptsRow" style="display:none">
+            <span class="staff-opts-label">切り替え：</span>
             <button type="button" class="btn-secondary btn-sm" id="staffFingerToggle">指番号</button>
             <button type="button" class="btn-secondary btn-sm" id="staffAccToggle">臨時記号</button>
           </div>
@@ -222,10 +223,12 @@
           <div class="note-playhead"></div>
           <div class="note-track" id="noteTrack"></div>
         </div>
-        <!-- 練習中の五線譜トグル（アプリ練習あり専用） -->
+        <!-- 練習中の五線譜トグル -->
         <div class="staff-opts-row" id="practiceStaffOptsRow" style="display:none">
+          <span class="staff-opts-label" id="practiceStaffOptsToggleLabel">切り替え：</span>
           <button type="button" class="btn-secondary btn-sm" id="practiceFingerToggle">指番号</button>
           <button type="button" class="btn-secondary btn-sm" id="practiceAccToggle">臨時記号</button>
+          <span class="staff-opts-spacer"></span>
           <span class="staff-info-label">ト音記号 ／ 4/4拍子</span>
         </div>
         <div class="staff-string-legend" id="practiceStringLegend" style="display:none">

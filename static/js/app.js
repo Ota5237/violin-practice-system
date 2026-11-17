@@ -302,24 +302,27 @@ function startPractice() {
   document.getElementById('practiceCard').style.display = 'block';
   document.getElementById('completeCard').style.display = 'none';
   document.getElementById('retryBtn').textContent = '戻る'; // チュートリアル後にラベルが変わっていた場合のリセット
-  // 前回指板ビューで終わっていた場合に備え、音符ビューに戻す
   document.getElementById('noteStaff').style.display   = 'block';
   document.getElementById('fingerboard').style.display = 'none';
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === 'notes');
   });
+  // アプリ練習なしでは指板切り替えボタンを隠す
+  const viewToggleEl = document.querySelector('.view-toggle');
+  if (viewToggleEl) viewToggleEl.style.display = window._currentStaffWithPrac ? '' : 'none';
   updateSubjectSkipControls(); // 検証モードなら、練習中の画面にもスキップ操作を出す
 
-  // アプリ練習ありのときだけ練習中の楽譜トグルを表示し、プロトコル画面と同期
+  // practiceStaffOptsRow は常に表示（テキストラベルはアプリ練習なしでも表示する）
   const pracOptsRow = document.getElementById('practiceStaffOptsRow');
   if (pracOptsRow) {
-    pracOptsRow.style.display = window._currentStaffWithPrac ? '' : 'none';
-    if (window._currentStaffWithPrac) {
-      const pf = document.getElementById('practiceFingerToggle');
-      const pa = document.getElementById('practiceAccToggle');
-      if (pf) pf.classList.toggle('active', _staffShowFingers);
-      if (pa) pa.classList.toggle('active', _staffShowAccidentals);
-    }
+    pracOptsRow.style.display = '';
+    const pf  = document.getElementById('practiceFingerToggle');
+    const pa  = document.getElementById('practiceAccToggle');
+    const lbl = document.getElementById('practiceStaffOptsToggleLabel');
+    const btnDisplay = window._currentStaffWithPrac ? '' : 'none';
+    if (pf)  { pf.style.display  = btnDisplay; pf.classList.toggle('active', _staffShowFingers); }
+    if (pa)  { pa.style.display  = btnDisplay; pa.classList.toggle('active', _staffShowAccidentals); }
+    if (lbl) lbl.style.display   = btnDisplay;
   }
   const legendEl = document.getElementById('practiceStringLegend');
   if (legendEl) legendEl.style.display = window._currentStaffWithPrac ? '' : 'none';
@@ -1259,7 +1262,7 @@ function renderNoteTrackStaff() {
     const y = staffY(offset);
     const { staffLetter, accidental } = parseNoteForStaff(entry.note);
     const noteData = scalesData.notes[entry.note];
-    const col = colorByString ? getStringColor(offset) : null;
+    const col = colorByString ? getStringColor(offset) : '#111';
     const stemUp = offset <= 4;
     const stemEnd = stemUp ? y - STEM_LEN_T : y + STEM_LEN_T;
     const sx = stemUp ? x + 7 - 0.5 : x - 7 + 0.5;
@@ -2416,7 +2419,7 @@ document.querySelectorAll('.view-toggle-btn').forEach(btn => {
     // 五線譜専用のUI（指番号・臨時記号トグル・弦凡例）は指板ビューでは隠す
     const optsRow = document.getElementById('practiceStaffOptsRow');
     const legend  = document.getElementById('practiceStringLegend');
-    if (optsRow) optsRow.style.display = isNotes && window._currentStaffWithPrac ? '' : 'none';
+    if (optsRow) optsRow.style.display = isNotes ? '' : 'none';
     if (legend)  legend.style.display  = isNotes && window._currentStaffWithPrac ? '' : 'none';
   });
 });

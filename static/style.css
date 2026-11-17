@@ -837,6 +837,14 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   color: var(--text-muted);
   margin-left: 4px;
 }
+.staff-opts-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.staff-opts-spacer {
+  flex: 1;
+}
 .staff-string-legend {
   display: flex;
   gap: 10px;
