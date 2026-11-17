@@ -226,6 +226,13 @@
         <div class="staff-opts-row" id="practiceStaffOptsRow" style="display:none">
           <button type="button" class="btn-secondary btn-sm" id="practiceFingerToggle">指番号</button>
           <button type="button" class="btn-secondary btn-sm" id="practiceAccToggle">臨時記号</button>
+          <span class="staff-info-label">ト音記号 ／ 4/4拍子</span>
+        </div>
+        <div class="staff-string-legend" id="practiceStringLegend" style="display:none">
+          <span style="color:#D97706">■ G弦</span>
+          <span style="color:#16A34A">■ D弦</span>
+          <span style="color:#2563EB">■ A弦</span>
+          <span style="color:#DC2626">■ E弦</span>
         </div>
 
         <div class="fingerboard" id="fingerboard" style="display:none">
@@ -247,7 +254,7 @@
 
             <g id="fbLandmarks"></g>
 
-            <g id="fingerMarkerGroup" class="finger-marker-group">
+            <g id="fingerMarkerGroup" class="finger-marker-group" style="display:none">
               <circle r="13" class="finger-marker"/>
               <text y="4" id="fingerMarkerLabel" class="finger-marker-label"></text>
             </g>
@@ -1004,6 +1011,7 @@
       <section class="card" id="accountCard">
         <h2>⚙️ アカウント設定</h2>
         <button type="button" id="showSubjectTutorialBtn" class="btn-secondary" style="display:none">📖 チュートリアルを見る</button>
+        <button type="button" id="showPlayingTutorialBtn" class="btn-secondary" style="display:none">🎻 開放弦チュートリアルを練習する</button>
         <button id="showChangePasswordBtn" class="btn-secondary">パスワードを変更</button>
         <div id="changePasswordForm" style="display:none">
           <div class="select-group">

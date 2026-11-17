@@ -222,6 +222,9 @@ function splitScaleNotes(scale) {
 // 被験者練習画面の五線譜トグル状態
 let _staffShowFingers = false;
 let _staffShowAccidentals = false;
+let _practiceFocus = 0; // ヘッダー幅に合わせて動的に計算（0=未設定→slot*2を使用）
+let _isPlayingTutorial = false; // 開放弦チュートリアル練習中フラグ
+let _needsPlayingTutorial = false; // テキストチュートリアルの初回表示後に弾くチュートリアルを開始するフラグ
 
 function renderSubjectStaff() {
   const el = document.getElementById('subjectStaffInner');
@@ -298,6 +301,13 @@ function startPractice() {
   document.getElementById('setupCard').style.display    = 'none';
   document.getElementById('practiceCard').style.display = 'block';
   document.getElementById('completeCard').style.display = 'none';
+  document.getElementById('retryBtn').textContent = '戻る'; // チュートリアル後にラベルが変わっていた場合のリセット
+  // 前回指板ビューで終わっていた場合に備え、音符ビューに戻す
+  document.getElementById('noteStaff').style.display   = 'block';
+  document.getElementById('fingerboard').style.display = 'none';
+  document.querySelectorAll('.view-toggle-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === 'notes');
+  });
   updateSubjectSkipControls(); // 検証モードなら、練習中の画面にもスキップ操作を出す
 
   // アプリ練習ありのときだけ練習中の楽譜トグルを表示し、プロトコル画面と同期
@@ -311,6 +321,8 @@ function startPractice() {
       if (pa) pa.classList.toggle('active', _staffShowAccidentals);
     }
   }
+  const legendEl = document.getElementById('practiceStringLegend');
+  if (legendEl) legendEl.style.display = window._currentStaffWithPrac ? '' : 'none';
 
   const bpmText = document.getElementById('bpmRange').value;
   const badge   = document.getElementById('modeBadge');
@@ -505,80 +517,111 @@ function hideStepHoldMeter() {
 // BPM（1分間の拍数）からメトロノームの間隔を計算し、
 // カウントダウン→本番のメトロノーム開始、という流れを組み立てる。
 // bpmOverride が渡された場合はそちらを使う（デモ開始時、デモ側のBPM設定を使うため）
+// Web Audio APIのルックアヘッドスケジューリングでメトロノームのドリフトをなくす。
+// setIntervalは25msの短いポーリングだけに使い、クリック音はAudioContextの
+// ハードウェアクロック(currentTime)で正確な未来時刻に予約する。
+// UIの視覚更新はsetTimeoutで行うが、基準時刻はAudioContext由来なので累積しない。
 function startTempoMode(bpmOverride) {
-  const bpm      = bpmOverride ?? parseInt(document.getElementById('bpmRange').value);
-  const interval = (60 / bpm) * 1000;
-  let beat       = 0;
-  let countdown  = 3;
-  let pendulumLeft = true; // ビートライトの振り子：次の拍は左端か右端か
+  const bpm         = bpmOverride ?? parseInt(document.getElementById('bpmRange').value);
+  const intervalSec = 60 / bpm;
+  const intervalMs  = intervalSec * 1000;
 
-  // 指板・音符トラックに最初の音をすぐ反映する（前回の練習の表示が
-  // カウントダウン中に一瞬見えてしまうのを防ぐ）。ただし「今弾く音」の光り方は
-  // カウントダウン中は消しておき、演奏が始まる瞬間に光るようにする
+  _tempoSession++;
+  const mySession = _tempoSession;
+
   showCurrentGlow = false;
   showCurrentNote();
 
   const countdownEl = document.getElementById('countdown');
   countdownEl.style.display = 'block';
-
-  // 電子メトロノームのようにテンポを目で見て分かりやすくするビートライトを表示する
   document.getElementById('metronomeBar').style.display = 'flex';
 
-  // activeSource は呼び出し元（startPractice / startDemo）が事前に設定済み
-  // （実マイクかデモのシミュレート音か、ここでは判断しない）
-
-  // マイク（またはデモモードのシミュレート音）を起動し、常時聴いておく
   activeSource.start((freq) => {
     detectedFreqNow = freq;
     document.getElementById('resultFreq').textContent = `周波数: ${freq.toFixed(1)} Hz`;
   });
 
-  // カウントダウン（3・2・1と数えて4拍目で開始する）。
-  // 数字の表示とクリック音を必ず同時に出す。以前は数字を表示してから
-  // 1拍分後にクリック音を鳴らしていたため、表示と音が1拍分ずれて聞こえていた。
-  countdownEl.textContent = countdown;
-  playClick(true); // 「3」の合図
-  flashMetronome(null); // カウントダウン中は5つ全部を光らせる
+  const LOOKAHEAD = 0.1; // 100ms先まで予約
+  const POLL_MS   = 25;  // ポーリング間隔(ms)
 
-  countTimer = setInterval(() => {
-    countdown--;
-    if (countdown > 0) {
-      countdownEl.textContent = countdown;
-      playClick(true); // 強拍
-      flashMetronome(null);
+  let nextBeatTime;
+  let beatsScheduled = 0; // スケジュール済みビート数 (0..2=カウント, 3=GO, 4..=本番)
+  let practiceBeat   = 0; // 本番ビートカウンタ（isAccent計算用）
+  let pendulumLeft   = true;
+
+  const scheduleBeat = (ctx) => {
+    const bn       = beatsScheduled++;
+    const beatTime = nextBeatTime;
+    nextBeatTime  += intervalSec;
+    const delay    = Math.max(0, (beatTime - ctx.currentTime) * 1000);
+
+    if (bn < 3) {
+      // カウントダウン: 3→2→1
+      const num = 3 - bn;
+      scheduleClickAt(beatTime, true);
+      setTimeout(() => {
+        if (_tempoSession !== mySession) return;
+        countdownEl.textContent = num;
+        flashMetronome(null);
+      }, delay);
+
+    } else if (bn === 3) {
+      // GO ビート：練習開始
+      scheduleClickAt(beatTime, true);
+      setTimeout(() => {
+        if (_tempoSession !== mySession) return;
+        countdownEl.style.display = 'none';
+        isPracticing = true;
+        showCurrentGlow = true;
+        showCurrentNote();
+        flashMetronome(pendulumLeft, true);
+        scheduleMetronomeSweep(pendulumLeft, intervalMs);
+      }, delay);
+
     } else {
-      clearInterval(countTimer);
-      countTimer = null;
-      countdownEl.style.display = 'none';
-      isPracticing = true;
-      showCurrentGlow = true; // ここで初めて「今弾く音」を光らせる
-      showCurrentNote();
-      playClick(true); // 4拍目 = スタートの合図
-      flashMetronome(pendulumLeft, true); // 1拍目（強拍）は左端から
-      scheduleMetronomeSweep(pendulumLeft, interval); // 次の拍まで、真ん中3つを通り道として光が通過していく
-
-      // メトロノーム開始
-      tempoInterval = setInterval(() => {
-        // 直前に弾いた音を評価
+      // 本番ビート
+      const pb       = practiceBeat++;
+      const isAccent = (pb + 1) % 4 === 0;
+      scheduleClickAt(beatTime, isAccent);
+      setTimeout(() => {
+        if (_tempoSession !== mySession) return;
         evaluateBeat();
-        beat++;
-
         if (currentIndex >= practiceNotes.length) {
           clearInterval(tempoInterval);
+          tempoInterval = null;
           completePractice();
           return;
         }
-
-        // evaluateBeat()が出した直前の音の判定(✅/❌)は消さずに残す
         showCurrentNote(false);
-        const isAccent = beat % 4 === 0;
-        playClick(isAccent);
-        pendulumLeft = !pendulumLeft; // 振り子のように毎拍、左端⇔右端を切り替える
+        pendulumLeft = !pendulumLeft;
         flashMetronome(pendulumLeft, isAccent);
-        scheduleMetronomeSweep(pendulumLeft, interval);
-      }, interval);
+        scheduleMetronomeSweep(pendulumLeft, intervalMs);
+      }, delay);
     }
-  }, interval);
+  };
+
+  const startScheduler = () => {
+    if (_tempoSession !== mySession) return; // stop済みなら中断
+    const ctx = getClickAudioCtx();
+    nextBeatTime = ctx.currentTime + 0.05; // 50ms後を最初のビートとする
+
+    // 初回: ルックアヘッド窓内のビートを即座に予約
+    while (nextBeatTime < ctx.currentTime + LOOKAHEAD) scheduleBeat(ctx);
+
+    tempoInterval = setInterval(() => {
+      if (_tempoSession !== mySession) { clearInterval(tempoInterval); return; }
+      const c = getClickAudioCtx();
+      while (nextBeatTime < c.currentTime + LOOKAHEAD) scheduleBeat(c);
+    }, POLL_MS);
+  };
+
+  // AudioContextが停止中なら再開してからスケジューラを起動する
+  const ctx = getClickAudioCtx();
+  if (ctx.state === 'suspended') {
+    ctx.resume().then(startScheduler);
+  } else {
+    startScheduler();
+  }
 }
 
 // ===========================
@@ -827,6 +870,26 @@ function playClick(accent = false) {
   } catch(e) {}
 }
 
+// 指定した AudioContext 時刻にクリック音を予約する（ルックアヘッドスケジューリング用）
+function scheduleClickAt(time, accent = false) {
+  try {
+    const ctx  = getClickAudioCtx();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = accent ? 1000 : 800;
+    gain.gain.setValueAtTime(accent ? 0.4 : 0.2, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.08);
+    osc.start(time);
+    osc.stop(time + 0.08);
+  } catch(e) {}
+}
+
+// テンポモードのセッションID（startTempoMode/stopPractice のたびにインクリメント）
+// setTimeoutコールバックが古いセッションのものかを判定するために使う
+let _tempoSession = 0;
+
 // デモモード（管理者用）：選んだ音を指定セントだけズラして実際に鳴らす。
 // 「セントのズレが実際どのくらいの音の違いなのか」を説明する際のデモ用。
 function playDemoTone() {
@@ -1064,7 +1127,8 @@ function ledgerOffsets(offset) {
 function noteTrackMetrics() {
   const width = document.getElementById('noteStaff').clientWidth || NOTE_VISIBLE * 92;
   const slot  = width / NOTE_VISIBLE;
-  return { slot, focus: slot * 2, width };
+  const focus = _practiceFocus > 0 ? _practiceFocus : slot * 2;
+  return { slot, focus, width };
 }
 
 // 五線譜（固定の5本線）を、現在の表示幅いっぱいに描画する
@@ -1081,15 +1145,64 @@ function renderNoteStaffContainer() {
   container.innerHTML = `
     <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 ${STAFF_HEIGHT}" preserveAspectRatio="none">
       <g id="staffLines"></g>
-      <text class="staff-clef" x="6" y="${clefY}">𝄞</text>
+      <g id="staffHeader"></g>
       <g class="note-track" id="noteTrack"></g>
     </svg>
     <div class="note-playhead"></div>`;
 }
 
+// 練習五線譜の固定ヘッダー（調号・4/4拍子）を描画し、_practiceFocusを更新する
+function renderStaffHeader() {
+  const headerEl = document.getElementById('staffHeader');
+  if (!headerEl) return;
+
+  const keySig = window._currentStaffKeySig || {};
+  const SHARP_ORDER_T = ['F','C','G','D','A','E','B'];
+  const SHARP_STEPS_T = { F:8, C:5, G:9, D:6, A:3, E:7, B:4 };
+  const FLAT_ORDER_T  = ['B','E','A','D','G','C','F'];
+  const FLAT_STEPS_T  = { B:4, E:7, A:3, D:6, G:2, C:5, F:1 };
+
+  const keySigItems = [];
+  for (const l of SHARP_ORDER_T) {
+    if (keySig[l] === 's') keySigItems.push({ ch: '♯', step: SHARP_STEPS_T[l] });
+  }
+  if (keySigItems.length === 0) {
+    for (const l of FLAT_ORDER_T) {
+      if (keySig[l] === 'f') keySigItems.push({ ch: '♭', step: FLAT_STEPS_T[l] });
+    }
+  }
+
+  const KS_X0 = 6;   // 左端から開始
+  const KS_W  = 12;  // 1記号あたりの幅
+  const LS_T  = STAFF_STEP_PX * 2; // 五線間隔(12px)
+
+  let headerSvg = '';
+  keySigItems.forEach((item, i) => {
+    const kx  = KS_X0 + i * KS_W;
+    const ky  = staffY(item.step);
+    const kfs = item.ch === '♯' ? Math.round(LS_T * 1.4) : Math.round(LS_T * 1.5);
+    const ktf = `translate(${kx.toFixed(1)},${ky.toFixed(1)}) scale(1,1.4) translate(${(-kx).toFixed(1)},${(-ky).toFixed(1)})`;
+    headerSvg += `<text x="${kx.toFixed(1)}" y="${ky.toFixed(1)}" font-size="${kfs}" fill="#555" text-anchor="middle" dominant-baseline="middle" transform="${ktf}">${item.ch}</text>`;
+  });
+
+  headerEl.innerHTML = headerSvg;
+
+  // LP = 調号右端 + 余白
+  const LP = KS_X0 + keySigItems.length * KS_W + 12;
+  const noteStaffEl = document.getElementById('noteStaff');
+  const width = noteStaffEl ? noteStaffEl.clientWidth || NOTE_VISIBLE * 92 : NOTE_VISIBLE * 92;
+  const slot  = width / NOTE_VISIBLE;
+  _practiceFocus = keySigItems.length > 0 ? Math.max(slot * 1.5, LP) : 0;
+
+  // プレイヘッドをヘッダー幅に合わせて移動
+  const playhead = noteStaffEl ? noteStaffEl.querySelector('.note-playhead') : null;
+  if (playhead) playhead.style.left = (_practiceFocus / width * 100).toFixed(2) + '%';
+}
+
 // practiceNotes 全体分の音符を横一列に並べて描画する（曲が始まるとき・画面サイズが変わったときに呼ばれる）。
 function renderNoteTrack() {
   renderNoteStaffContainer();
+  renderStaffHeader();
   renderNoteTrackStaff();
 }
 
@@ -1130,14 +1243,6 @@ function renderNoteTrackStaff() {
     bracketSvg += `<rect x="${bx1.toFixed(1)}" y="${by1.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="${br}" ry="${br}" fill="rgba(255,140,0,0.22)" stroke="rgba(220,100,0,0.45)" stroke-width="1"/>`;
   }
 
-  // 4/4 拍子記号（noteTrack内でスクロール。最初の音符の手前に配置）
-  const tsX   = -slot * 1.0;
-  const tsFs  = Math.round(STAFF_STEP_PX * 2 * 2.1);
-  const tsY1T = staffY(6);
-  const tsY2T = staffY(2);
-  const timeSigSvg = `<text x="${tsX.toFixed(1)}" y="${tsY1T}" font-size="${tsFs}" fill="#555" text-anchor="middle" dominant-baseline="middle" font-family="serif" font-weight="bold">4</text>`
-                   + `<text x="${tsX.toFixed(1)}" y="${tsY2T}" font-size="${tsFs}" fill="#555" text-anchor="middle" dominant-baseline="middle" font-family="serif" font-weight="bold">4</text>`;
-
   // 縦線（4音ごと）
   let barlineSvg = '';
   for (let bi = 0; bi < practiceNotes.length - 1; bi++) {
@@ -1173,7 +1278,8 @@ function renderNoteTrackStaff() {
       ? `<text class="note-accidental" x="${x - 13}" y="${y + 4}"${col ? ` fill="${col}"` : ''}>${accidentalGlyph}</text>`
       : '';
 
-    const labelY = y + 18;
+    // 符幹が下向きのときは符幹の下に音名を配置して被りを避ける
+    const labelY = stemUp ? y + 18 : stemEnd + 13;
 
     // 指番号：符幹の先端の少し外側
     const fingerSvg = _staffShowFingers ? (() => {
@@ -1197,7 +1303,7 @@ function renderNoteTrackStaff() {
     </g>`;
   }).join('');
 
-  track.innerHTML = timeSigSvg + bracketSvg + barlineSvg + notesSvg;
+  track.innerHTML = bracketSvg + barlineSvg + notesSvg;
   updateNoteTrackView();
 }
 
@@ -1223,6 +1329,7 @@ window.addEventListener('resize', () => {
 // マイク・タイマーを止め、正答率を計算してサーバーに履歴として保存し、
 // 完了カード（結果画面）を表示する
 async function completePractice() {
+  _tempoSession++; // 残存する setTimeout コールバックを無効化
   activeSource.stop();
   isPracticing = false;
   if (tempoInterval) { clearInterval(tempoInterval); tempoInterval = null; }
@@ -1234,6 +1341,25 @@ async function completePractice() {
   document.getElementById('listeningManualHint').style.display  = 'none';
   document.getElementById('listeningPlayNoteBtn').style.display = 'none';
   document.getElementById('beginCountdownBtn').style.display    = 'none';
+
+  // 開放弦チュートリアル完了：履歴保存やプロトコル処理を一切行わず、次へ進むボタンを表示する
+  if (_isPlayingTutorial) {
+    _isPlayingTutorial = false;
+    document.getElementById('practiceCard').style.display = 'none';
+    document.getElementById('completeCard').style.display = 'block';
+    document.querySelector('#completeCard h2').textContent = 'チュートリアル完了！';
+    document.getElementById('completeMsg').textContent = '開放弦の練習ができました。これで準備完了です！';
+    document.getElementById('accuracyDisplay').style.display    = 'none';
+    document.getElementById('resultDetail').innerHTML           = '';
+    document.getElementById('retryPracticeBtn').style.display   = 'none';
+    document.getElementById('weakNoteRetryBtn').style.display   = 'none';
+    document.getElementById('verifyModeContinueBtn').style.display        = 'none';
+    document.getElementById('subjectSelfPracticeReadyBtn').style.display  = 'none';
+    const retryBtn = document.getElementById('retryBtn');
+    retryBtn.textContent   = '練習を始める';
+    retryBtn.style.display = '';
+    return;
+  }
 
   // 管理者ライブ記録モード: 完了時に結果をモーダルに返す
   if (adminLiveRecordMode) {
@@ -1703,6 +1829,7 @@ function renderResultDetail(mode) {
 // マイク・メトロノーム・カウントダウンをすべて止め、設定画面に戻る
 // （completePractice()と違い、履歴には保存しない）
 function stopPractice() {
+  _tempoSession++; // キュー済みの setTimeout コールバックを無効化
   activeSource.stop();
   isPracticing = false;
   if (tempoInterval)  { clearInterval(tempoInterval); tempoInterval = null; }
@@ -2283,8 +2410,14 @@ document.querySelectorAll('.view-toggle-btn').forEach(btn => {
     document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     const view = btn.dataset.view;
-    document.getElementById('noteStaff').style.display   = view === 'notes'       ? 'block' : 'none';
-    document.getElementById('fingerboard').style.display = view === 'fingerboard' ? 'block' : 'none';
+    const isNotes = view === 'notes';
+    document.getElementById('noteStaff').style.display   = isNotes ? 'block' : 'none';
+    document.getElementById('fingerboard').style.display = isNotes ? 'none'  : 'block';
+    // 五線譜専用のUI（指番号・臨時記号トグル・弦凡例）は指板ビューでは隠す
+    const optsRow = document.getElementById('practiceStaffOptsRow');
+    const legend  = document.getElementById('practiceStringLegend');
+    if (optsRow) optsRow.style.display = isNotes && window._currentStaffWithPrac ? '' : 'none';
+    if (legend)  legend.style.display  = isNotes && window._currentStaffWithPrac ? '' : 'none';
   });
 });
 
@@ -2750,7 +2883,7 @@ async function initSubjectPractice() {
 
   // 初めてログインした被験者には、練習を始める前にチュートリアルを自動で見せる
   if (currentUser.has_seen_tutorial !== 'yes') {
-    openSubjectTutorial();
+    openSubjectTutorial(true); // スライド後に開放弦チュートリアルへ進む
   }
 
   const data = await getSubjectAssignment(currentUser.id);
@@ -2815,8 +2948,10 @@ const SUBJECT_TUTORIAL_SLIDES = [
 let subjectTutorialIndex = 0;
 
 // チュートリアルを開く（初回ログイン時に自動で呼ばれる。設定タブの「チュートリアルを見る」からも呼べる）
-function openSubjectTutorial() {
+// withPlayingTutorial=true のとき：スライド完了後に開放弦チュートリアルへ進む
+function openSubjectTutorial(withPlayingTutorial = false) {
   subjectTutorialIndex = 0;
+  _needsPlayingTutorial = withPlayingTutorial;
   renderSubjectTutorialSlide();
   document.getElementById('subjectTutorialOverlay').style.display = 'flex';
 }
@@ -2847,6 +2982,70 @@ async function closeSubjectTutorial() {
       // 既読の保存に失敗しても、閉じる操作自体は妨げない（次回ログイン時にまた出るだけ）
     }
   }
+  // 初回チュートリアル完了後、開放弦の弾くチュートリアルへ進む
+  if (_needsPlayingTutorial) {
+    _needsPlayingTutorial = false;
+    openPlayingTutorial();
+  }
+}
+
+// 開放弦の弾くチュートリアルを開始する
+// G弦×2, D弦×2, A弦×2, E弦×2 の8音（上行のみ）を1音ずつモードで練習させる
+function openPlayingTutorial() {
+  practiceNotes = [
+    { note: 'G3', position: '開放', string: 'G弦' },
+    { note: 'G3', position: '開放', string: 'G弦' },
+    { note: 'D4', position: '開放', string: 'D弦' },
+    { note: 'D4', position: '開放', string: 'D弦' },
+    { note: 'A4', position: '開放', string: 'A弦' },
+    { note: 'A4', position: '開放', string: 'A弦' },
+    { note: 'E5', position: '開放', string: 'E弦' },
+    { note: 'E5', position: '開放', string: 'E弦' },
+  ];
+
+  _isPlayingTutorial = true;
+  window._currentStaffWithPrac = true;
+  window._currentStaffKeySig   = {};
+  window._currentStaffNotes    = practiceNotes;
+
+  currentIndex       = 0;
+  notesCorrect       = 0;
+  practiceResults    = [];
+  currentNoteMissed  = false;
+  showCurrentGlow    = true;
+  activeSource       = detector;
+  isDemoRun          = false;
+
+  document.getElementById('setupCard').style.display    = 'none';
+  document.getElementById('practiceCard').style.display = 'block';
+  document.getElementById('completeCard').style.display = 'none';
+  document.getElementById('metronomeBar').style.display = 'none';
+  document.getElementById('noteStaff').style.display   = 'block';
+  document.getElementById('fingerboard').style.display = 'none';
+  document.querySelectorAll('.view-toggle-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === 'notes');
+  });
+
+  const pracOptsRow = document.getElementById('practiceStaffOptsRow');
+  if (pracOptsRow) {
+    pracOptsRow.style.display = '';
+    const pf = document.getElementById('practiceFingerToggle');
+    const pa = document.getElementById('practiceAccToggle');
+    if (pf) pf.classList.toggle('active', _staffShowFingers);
+    if (pa) pa.classList.toggle('active', _staffShowAccidentals);
+  }
+  const legendEl = document.getElementById('practiceStringLegend');
+  if (legendEl) legendEl.style.display = '';
+
+  document.getElementById('modeBadge').textContent = '🎻 チュートリアル: 開放弦練習（1音ずつ）';
+
+  renderNoteTrack();
+  // step モードは即時開始せず、「▶ 開始する」ボタンを押してから開始させる
+  // （BPM 遅延不要なので、ボタン押下後に即時 startStepMode を呼ぶ）
+  showCurrentGlow = false;
+  showCurrentNote();
+  beginCountdownAction = startStepMode;
+  document.getElementById('beginCountdownBtn').style.display = 'block';
 }
 
 document.getElementById('subjectTutorialNextBtn').addEventListener('click', () => {
@@ -2862,6 +3061,11 @@ document.getElementById('subjectTutorialSkipBtn').addEventListener('click', clos
 
 // 設定タブの「📖 チュートリアルを見る」ボタン：既読状態に関わらず、いつでも見返せる
 document.getElementById('showSubjectTutorialBtn').addEventListener('click', openSubjectTutorial);
+// 設定タブの「🎻 開放弦チュートリアルを練習する」ボタン
+document.getElementById('showPlayingTutorialBtn').addEventListener('click', () => {
+  switchTab('practice');
+  openPlayingTutorial();
+});
 
 // 登録済みの音階から16ステップのロードマップを仮に組み立てる（検証モード用）。
 // サーバー側の auto-generation と同じ構造：Phase1（独自練習）× 8 + Phase2（アプリ練習）× 8
@@ -3449,6 +3653,7 @@ function initAccountDeletionUI() {
   document.getElementById('deleteAccountBtn').style.display         = isSubject ? 'none' : '';
   document.getElementById('subjectDeleteAccountNote').style.display = isSubject ? 'block' : 'none';
   document.getElementById('showSubjectTutorialBtn').style.display   = isSubject ? '' : 'none';
+  document.getElementById('showPlayingTutorialBtn').style.display   = isSubject ? '' : 'none';
 }
 
 document.getElementById('subjectBpmRange').addEventListener('input', (e) => {
