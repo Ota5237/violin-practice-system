@@ -1,23 +1,23 @@
 :root {
-  /* ヴァイオリンの木目・ニス・弦をイメージした配色 */
-  --bg-deep:        #1f120b;   /* 深いウォルナット */
-  --bg-body:        #2b1810;   /* ボディ背景（濃い木目） */
-  --bg-card:        #3d2418;   /* マホガニー（カード） */
-  --bg-input:       #4a2f1f;   /* 表板より少し明るい木 */
-  --border-soft:    rgba(212, 162, 78, 0.18);
+  /* ブラック系テーマ */
+  --bg-deep:        #080809;
+  --bg-body:        #111114;
+  --bg-card:        #1c1c20;
+  --bg-input:       #27272c;
+  --border-soft:    rgba(212, 162, 78, 0.22);
 
-  --gold:           #d4a24e;   /* ニスのゴールド */
-  --gold-bright:    #e8c468;   /* 明るいゴールド（ハイライト） */
-  --burgundy:       #8b3a42;   /* 深紅（f字孔・裏板の赤み） */
+  --gold:           #d4a24e;
+  --gold-bright:    #e8c468;
+  --burgundy:       #8b3a42;
   --burgundy-bright:#b3505a;
 
-  --text-primary:   #f5e8d8;   /* アイボリー */
-  --text-secondary: #c2a78c;   /* くすんだタン */
-  --text-muted:     #8a7160;   /* 暗めのタン */
+  --text-primary:   #f0f0f0;
+  --text-secondary: #a0a0a8;
+  --text-muted:     #60606a;
 
-  --success:        #7fa668;   /* 松葉のグリーン */
-  --warning:        #d68910;   /* アンバー */
-  --danger:         #b3505a;   /* 深紅寄りの赤 */
+  --success:        #5aad4e;
+  --warning:        #d68910;
+  --danger:         #c94f5a;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -147,6 +147,26 @@ main {
 
 .card h2 { font-size: 1.1rem; color: var(--gold); margin-bottom: 16px; }
 
+/* 被験者向けチュートリアルのオーバーレイ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+.modal-card {
+  width: 100%;
+  max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-actions { display: flex; gap: 8px; margin-top: 8px; }
+.modal-actions button { margin-top: 0; }
+
 .subject-protocol-info {
   padding: 14px 16px;
   margin-bottom: 16px;
@@ -155,6 +175,238 @@ main {
 .subject-protocol-info h3 { font-size: 1rem; color: var(--gold); margin-bottom: 8px; }
 .subject-protocol-info .login-note { margin-bottom: 0; }
 .subject-protocol-info button { margin-top: 12px; }
+
+/* ─── 被験者プロトコル・シンプル表示 ─── */
+.subject-info-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.subject-phase-badge {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 20px;
+  background: var(--color-primary, #5a9fd4);
+  color: #fff;
+}
+.subject-day-badge {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 20px;
+  background: var(--gold, #d4a24e);
+  color: #fff;
+}
+.subject-stagephase-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.subject-scale-name {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 4px 0 12px;
+  letter-spacing: 0.03em;
+}
+
+/* ─── 五線譜（横スクロール） ─── */
+.subject-staff-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  margin: 8px 0 14px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid var(--border-soft);
+  padding: 8px 4px;
+  min-height: 140px;
+  cursor: grab;
+}
+.subject-staff-scroll:active { cursor: grabbing; }
+#subjectStaffInner {
+  display: inline-block;  /* コンテンツ幅に広がり、スクロール可能にする */
+  white-space: nowrap;
+}
+/* ─── 折りたたみ見出し ─── */
+.collapsible-heading {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.collapsible-heading:hover { opacity: 0.8; }
+.collapsible-arrow {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-left: 8px;
+}
+
+.staff-svg {
+  display: block;
+  /* width/height は SVG 属性で決まる — 100% を上書きしない */
+  width: auto !important;
+  height: auto !important;
+  color: #222;
+}
+.staff-line {
+  stroke: #000;
+  stroke-width: 1.4;
+}
+.ledger-line {
+  stroke: #000;
+  stroke-width: 1.5;
+}
+.staff-clef {
+  fill: #222;
+  font-family: 'Segoe UI Symbol', 'Noto Music', serif;
+}
+.staff-acc {
+  fill: #222;
+  font-family: 'Segoe UI Symbol', 'Noto Music', serif;
+}
+.note-head {
+  fill: #111;
+  stroke: #111;
+  stroke-width: 0.5;
+}
+.note-stem {
+  stroke: #111;
+  stroke-width: 1.8;
+}
+.staff-barline {
+  stroke: #888;
+  stroke-width: 1.2;
+}
+
+/* ─── 検証モード・デイグリッド ─── */
+.verify-day-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 14px 0;
+}
+.verify-group-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.verify-day-phase h4 {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.verify-day-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.verify-day-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 14px;
+  min-width: 80px;
+  border: 2px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.82rem;
+  position: relative;
+  transition: border-color 0.15s, background 0.15s;
+}
+.verify-day-btn:hover { border-color: var(--color-primary); }
+.verify-day-btn.verified-day-cleared {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--bg-input));
+}
+.verify-day-label { font-weight: 700; font-size: 0.95rem; }
+.verify-day-scales { text-align: center; color: var(--text-muted); line-height: 1.4; }
+.verify-day-check {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 0.75rem;
+  color: var(--success);
+  font-weight: 700;
+}
+
+/* ─── ロードマップ編集・シンプルグリッド ─── */
+.roadmap-edit-simple-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+@media (max-width: 600px) {
+  .roadmap-edit-simple-grid { grid-template-columns: 1fr; }
+}
+.roadmap-edit-phase-block {
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+.roadmap-edit-phase-block h4 {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.roadmap-edit-simple-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.roadmap-edit-simple-row label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  min-width: 36px;
+}
+.roadmap-edit-simple-cat {
+  font-size: 0.8rem;
+  padding: 4px 6px;
+}
+.roadmap-edit-simple-scale {
+  flex: 1;
+  font-size: 0.85rem;
+  padding: 4px 6px;
+}
+
+/* 「▶ 練習開始」と「✅ テストに進む」は意味の異なるボタンなので、間を広めに空ける */
+#subjectProceedToTestBtn { margin-top: 32px; }
+
+.subject-weak-note-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(212, 162, 78, 0.14);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.subject-weak-note-banner button { margin-top: 0; flex-shrink: 0; }
+
+.subject-skip-controls {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-soft);
+}
+.subject-skip-controls .login-note-center { margin-bottom: 4px; }
+.subject-skip-controls button { margin-top: 8px; margin-right: 8px; }
 
 /* 被験者モードのロードマップ（丸をステージ、線でつないだ進行マップ） */
 .roadmap-track {
@@ -205,6 +457,50 @@ main {
 }
 .roadmap-line.cleared {
   background: var(--success);
+}
+.roadmap-circle.no-practice {
+  border-style: dashed;
+}
+.roadmap-circle.no-practice::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  background: var(--gold);
+  border-radius: 50%;
+  border: 1px solid var(--bg-deep);
+  font-size: 7px;
+  line-height: 10px;
+  text-align: center;
+}
+
+/* 編集UIの「アプリ練習あり」チェックボックスラベル */
+.roadmap-edit-practice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* 検証モードのステージ選択（丸をクリックして、そのステージの練習を始める） */
+.roadmap-stage-btn {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 2px solid var(--gold);
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+  font-size: 0.9rem;
+}
+.roadmap-stage-btn:hover { transform: scale(1.1); }
+.roadmap-stage-btn.cleared {
+  background: var(--success);
+  color: var(--bg-deep);
+  border-color: var(--success);
 }
 @keyframes roadmap-pulse {
   0%, 100% { box-shadow: 0 0 0 4px rgba(232, 196, 104, 0.3); }
@@ -268,6 +564,64 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-danger   { background: var(--burgundy); color: var(--text-primary); margin-top: 12px; }
 .btn-sm       { width: auto; font-size: 0.85rem; padding: 8px 16px; margin: 16px auto 0; display: block; }
 
+/* 練習カレンダー（記録タブ） */
+.calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.calendar-header button { margin: 0; }
+.calendar-header span { font-weight: bold; color: var(--gold); min-width: 86px; text-align: center; }
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.calendar-weekday {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  padding-bottom: 4px;
+}
+.calendar-day {
+  position: relative;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--bg-input);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.calendar-day.empty { background: transparent; }
+.calendar-day.today { box-shadow: inset 0 0 0 2px var(--gold); }
+.calendar-day.practiced { background: var(--success); color: var(--bg-deep); font-weight: bold; }
+.calendar-check {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--gold-bright);
+  color: var(--bg-deep);
+  font-size: 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scale-builder-accidental-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.scale-builder-accidental-buttons .scale-builder-accidental-option { margin: 0; }
+.scale-builder-accidental-option.active {
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  color: var(--bg-deep);
+  font-weight: bold;
+}
+
 /* ===== 電子メトロノーム風のビートライト（テンポモードでテンポを視覚的に分かりやすくする） =====
    丸を5つ並べた「振り子」の軌道に見立て、実際に拍が来るのは両端の丸だけ。
    真ん中の3つは軌道の目印として置いておくだけで光らない。 */
@@ -317,10 +671,14 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   height: 140px;
   margin: 0 auto 16px;
   overflow: hidden;
-  background: var(--bg-input);
-  border: 1px solid var(--border-soft);
+  background: #fff;
+  border: 1px solid #ccc;
   border-radius: 14px;
+  touch-action: none; /* リスニングモードでの横ドラッグ中に、ブラウザ側のスクロール・ズームが割り込まないようにする */
 }
+
+#listeningManualHint { margin-top: -4px; }
+#listeningPlayNoteBtn { display: block; margin: 0 auto 16px; }
 
 .note-playhead {
   position: absolute;
@@ -330,11 +688,11 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   opacity: 0.6;
 }
 
-.staff-svg { display: block; width: 100%; height: 100%; }
+.staff-svg { display: block; }
 
-.staff-line { stroke: var(--text-secondary); stroke-width: 1; opacity: 0.55; }
+.note-staff .staff-line { stroke: #bbb; stroke-width: 1; opacity: 1; }
 
-.staff-clef { fill: var(--text-secondary); font-size: 68px; opacity: 0.8; font-family: 'Segoe UI Symbol', 'Noto Music', serif; }
+.note-staff .staff-clef { fill: #555; font-size: 68px; opacity: 1; font-family: 'Segoe UI Symbol', 'Noto Music', serif; }
 
 .note-track { transition: transform 0.35s cubic-bezier(.4,0,.2,1); }
 
@@ -343,18 +701,20 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   transition: opacity 0.3s, transform 0.3s;
 }
 
-.note-ledger { stroke: var(--text-muted); stroke-width: 1.5; }
+.note-ledger { stroke: #aaa; stroke-width: 1.5; }
+
+.staff-finger-num { font-size: 11px; fill: #333; font-weight: bold; }
 
 .note-accidental {
   font-size: 15px;
-  fill: var(--text-secondary);
+  fill: #555;
   text-anchor: middle;
   dominant-baseline: middle;
 }
 
 .note-head {
-  fill: var(--bg-card);
-  stroke: var(--border-soft);
+  fill: #fff;
+  stroke: #444;
   stroke-width: 1.5;
   transition: fill 0.3s, stroke 0.3s;
 }
@@ -362,7 +722,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .note-solfege {
   font-size: 11px;
   font-weight: bold;
-  fill: var(--text-muted);
+  fill: #777;
   text-anchor: middle;
 }
 
@@ -377,7 +737,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .staff-note.current {
   transform: scale(1.7);
 }
-.staff-note.current .note-head       { fill: var(--gold-bright); stroke: var(--gold-bright); }
+.staff-note.current .note-head       { fill: var(--gold-bright) !important; stroke: var(--gold-bright) !important; }
 .staff-note.current .note-solfege    { fill: var(--text-primary); }
 .staff-note.current .note-highlight  { opacity: 0.35; }
 
@@ -388,6 +748,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .scale-builder-guide-line { stroke: var(--text-muted); stroke-width: 1; opacity: 0.35; stroke-dasharray: 3 3; }
 
 .scale-builder-hint { font-size: 0.8rem; margin: 4px 0 12px; }
+.scale-builder-turn-hint { font-size: 0.8rem; margin: 4px 0 0; }
 
 /* 音を追加・挿入する「枠」を示す左右2本の縦線。パネルが開いている間、常に表示する */
 .scale-builder-insert-line { stroke: var(--gold-bright); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: 0.5; }
@@ -447,22 +808,36 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .scale-list-category h3 { font-size: 0.9rem; color: var(--gold); margin-bottom: 6px; }
 
 .scale-list-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  display: block;
   padding: 10px 0;
   border-bottom: 1px solid var(--border-soft);
 }
 .scale-list-row:last-child { border-bottom: none; }
 
+.scale-list-row-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .scale-list-name { font-size: 0.9rem; color: var(--text-primary); }
 .scale-list-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
-
 .scale-list-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .scale-list-actions button { width: auto; margin: 0; padding: 6px 12px; font-size: 0.8rem; }
 
+.scale-list-staff-preview { overflow-x: auto; padding: 6px 0 2px; }
+
 .scale-list-empty { color: var(--text-muted); font-size: 0.85rem; }
+
+/* 五線譜トグルボタン行 */
+.staff-opts-row {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 6px;
+  flex-wrap: wrap;
+}
+.staff-opts-row .btn-sm,
+.scale-list-actions .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+.btn-secondary.active {
+  background: var(--gold);
+  color: #000;
+  border-color: var(--gold);
+}
 
 /* ===== 表示切り替え（音符 / 指板） ===== */
 .view-toggle { display: flex; justify-content: center; gap: 8px; margin-bottom: 12px; }
@@ -571,6 +946,13 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .history-list { list-style: none; max-height: 200px; overflow-y: auto; }
 .history-list li { padding: 8px 4px; border-bottom: 1px solid var(--border-soft); font-size: 0.9rem; color: var(--text-secondary); }
 .history-empty { color: var(--text-muted); text-align: center; padding: 16px; }
+.history-item  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-focus-practice {
+  margin-left: auto; padding: 2px 8px; font-size: 0.78rem;
+  border: 1px solid var(--accent); border-radius: 4px; cursor: pointer;
+  background: transparent; color: var(--accent);
+}
+.btn-focus-practice:hover { background: var(--accent); color: #fff; }
 
 /* ===== タブナビ ===== */
 .tab-nav { display: flex; justify-content: center; gap: 8px; margin-top: 12px; }
@@ -692,6 +1074,17 @@ canvas { max-height: 260px; }
 .compare-table .compare-role-badge {
   font-size: 0.65rem; font-weight: bold; color: var(--bg-deep);
   background: var(--gold); border-radius: 20px; padding: 1px 8px; margin-left: 6px;
+}
+
+/* アカウント一覧：セクション区切り */
+.account-list-section-header td {
+  background: var(--bg-input);
+  color: var(--gold);
+  font-size: 0.75rem;
+  font-weight: bold;
+  padding: 5px 10px;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 /* アカウント一覧：行をクリックすると、そのアカウントの履歴・統計を表示する */
@@ -835,3 +1228,341 @@ canvas { max-height: 260px; }
   color: var(--text-secondary);
 }
 .fft-peak-info strong { color: var(--gold-bright); }
+
+/* ===== 楽譜プレビューモーダル ===== */
+.sheet-music-preview-card {
+  max-width: 420px;
+  width: 90vw;
+}
+
+.sheet-music-table-wrap {
+  overflow-y: auto;
+  max-height: 60vh;
+  margin: 12px 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.sheet-music-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.sheet-music-table th,
+.sheet-music-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.sheet-music-table th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.sheet-music-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ===== セッション終了画面 ===== */
+#subjectSessionEndInfo {
+  text-align: center;
+}
+
+#subjectSessionEndInfo h3 {
+  font-size: 1.3rem;
+  margin-bottom: 12px;
+}
+
+/* ===== 研究データタブ ===== */
+.research-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.research-filter-label {
+  font-size: 0.85rem;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+
+.research-filter-row select {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+}
+
+.research-table {
+  font-size: 0.82rem;
+  min-width: 600px;
+}
+
+.research-table td,
+.research-table th {
+  white-space: nowrap;
+}
+
+.research-accuracy {
+  font-weight: 600;
+}
+
+.research-empty-note {
+  margin-top: 8px;
+}
+
+.research-auto-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-primary);
+  margin-top: 2px;
+  opacity: 0.85;
+}
+
+.research-total-hint {
+  font-size: 0.8rem;
+  font-weight: normal;
+  color: var(--color-text-muted, #666);
+  margin-left: 6px;
+}
+
+/* 研究モーダル: 正答数 ／ 総音符数 インライン行 */
+.research-score-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.research-score-inline input[type="number"] {
+  width: 80px;
+  min-width: 60px;
+}
+.research-score-sep {
+  color: var(--text-secondary, #a0a0a8);
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+/* 最大音数ヒント */
+.research-note-max-hint {
+  font-size: 0.78rem;
+  font-weight: normal;
+  color: var(--color-primary, #7c3aed);
+  margin-left: 4px;
+}
+
+/* 読み取り専用フィールド（自動計算値） */
+#researchEditNotesTotal[readonly] {
+  opacity: 0.6;
+  cursor: default;
+  background: var(--bg-card, #1c1c20);
+}
+
+/* 正答率バッジ */
+.research-accuracy-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-width: 48px;
+  text-align: center;
+  background: var(--bg-input, #27272c);
+  color: var(--text-secondary, #a0a0a8);
+}
+.research-accuracy-badge.acc-good { background: #14532d; color: #4ade80; }
+.research-accuracy-badge.acc-ok   { background: #713f12; color: #fbbf24; }
+.research-accuracy-badge.acc-bad  { background: #450a0a; color: #f87171; }
+
+/* ライブ演奏ボタン行 */
+.research-live-practice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+  flex-wrap: wrap;
+}
+.research-live-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted, #60606a);
+}
+.btn-outline-accent {
+  padding: 7px 16px;
+  border: 1.5px solid var(--color-primary, #7c3aed);
+  background: transparent;
+  color: var(--color-primary, #7c3aed);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-outline-accent:hover {
+  background: var(--color-primary, #7c3aed);
+  color: #fff;
+}
+
+/* ===== 音符ごとの詳細設定グリッド ===== */
+.note-results-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted, #60606a);
+  margin: 0 0 6px;
+}
+
+.note-results-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.nr-row {
+  display: grid;
+  grid-template-columns: 36px 48px 1fr 60px 16px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--bg-input, #27272c);
+  font-size: 0.82rem;
+}
+.nr-row.nr-outcome-correct { background: #14532d22; }
+.nr-row.nr-outcome-near    { background: #78350f33; }
+.nr-row.nr-outcome-wrong   { background: #450a0a33; }
+.nr-row.nr-outcome-retry   { background: #1e3a5f33; }
+/* 頂点音符（turn）：紫のボーダーで強調 */
+.nr-row.nr-turn-note { border-left: 3px solid #a855f7; background-color: #3b076420; }
+.nr-row.nr-turn-note.nr-outcome-correct { background: #3b076428; }
+.nr-row.nr-turn-note.nr-outcome-near    { background: #3b076428; }
+.nr-row.nr-turn-note.nr-outcome-wrong   { background: #3b076428; }
+.nr-turn-mark { color: #a855f7; font-size: 0.65rem; margin-left: 2px; vertical-align: super; }
+
+.nr-name {
+  font-weight: 700;
+  color: var(--text-primary, #f0f0f0);
+  text-align: center;
+}
+.nr-str {
+  font-size: 0.72rem;
+  color: var(--text-muted, #60606a);
+  text-align: center;
+}
+.nr-outcome-sel {
+  font-size: 0.78rem;
+  padding: 2px 4px;
+  background: var(--bg-card, #1c1c20);
+  color: var(--text-primary, #f0f0f0);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+}
+.nr-cents {
+  width: 56px;
+  font-size: 0.8rem;
+  padding: 2px 4px;
+  text-align: right;
+  background: var(--bg-card, #1c1c20);
+  color: var(--text-primary, #f0f0f0);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+}
+.nr-unit {
+  color: var(--text-muted, #60606a);
+  font-size: 0.75rem;
+}
+
+/* 研究モーダル: ロードマップから自動入力されたフィールドのスタイル */
+#researchEditDirection:disabled,
+#researchEditBpm:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.stats-record-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.stats-record-edit-header h2 {
+  margin: 0;
+}
+
+/* 研究分析グラフ */
+.research-analysis-filter {
+  margin-bottom: 16px;
+}
+
+.research-analysis-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 700px) {
+  .research-analysis-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.research-analysis-chart-wrap h3 {
+  font-size: 0.9rem;
+  margin: 0 0 8px 0;
+  color: var(--text-muted, #888);
+}
+
+/* フェーズバッジ */
+.phase-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.phase-baseline {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.phase-test {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.phase-practice {
+  background: #dcfce7;
+  color: #166534;
+}
+
+@media (prefers-color-scheme: dark) {
+  .phase-baseline { background: #1e3a5f; color: #93c5fd; }
+  .phase-test     { background: #4a3300; color: #fcd34d; }
+  .phase-practice { background: #14532d; color: #86efac; }
+}
+
+.research-edit-card {
+  max-width: 480px;
+  width: 94vw;
+}
+
+/* 研究者バッジ */
+.role-badge {
+  font-size: 0.75rem;
+  background: var(--gold-bright, #d4a800);
+  color: #1a1200;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+  margin-left: 6px;
+}

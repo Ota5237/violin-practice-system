@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 import sqlite3
@@ -19,7 +19,8 @@ CATEGORY_LABELS = {
 }
 VALID_STRINGS = {'G弦', 'D弦', 'A弦', 'E弦'}
 VALID_DIRECTIONS = {'up', 'down', 'updown', 'arpeggio'}
-SUBJECT_ROADMAP_LENGTH = 6  # 被験者に練習してもらう音階の数（ロードマップのステップ数）
+SUBJECT_ROADMAP_LENGTH = 16  # 被験者に練習してもらうステップ数（4音階・2ペア×4日×2音階）
+MAX_ROADMAP_STEPS = 20      # ロードマップの上限ステップ数
 
 # 音階データに含まれる音名(note)が、周波数対応表(notes.json)に実在するキーかを検証するために読み込む
 def get_valid_note_keys():
@@ -90,7 +91,11 @@ def init_db():
                 step_hold_general   TEXT NOT NULL DEFAULT 'no',
                 pass_threshold      INTEGER NOT NULL DEFAULT 80,
                 correct_cents       INTEGER NOT NULL DEFAULT 15,
-                close_cents         INTEGER NOT NULL DEFAULT 35
+                close_cents         INTEGER NOT NULL DEFAULT 35,
+                verify_mode_direction TEXT    NOT NULL DEFAULT 'up',
+                verify_mode_bpm        INTEGER NOT NULL DEFAULT 60,
+                verify_mode_step_hold     TEXT NOT NULL DEFAULT 'instant',
+                verify_mode_save_history  TEXT NOT NULL DEFAULT 'yes'
             )
         ''')
         existing_settings_cols = {row[1] for row in conn.execute('PRAGMA table_info(app_settings)')}
@@ -106,6 +111,14 @@ def init_db():
             conn.execute("ALTER TABLE app_settings ADD COLUMN correct_cents INTEGER NOT NULL DEFAULT 15")
         if 'close_cents' not in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings ADD COLUMN close_cents INTEGER NOT NULL DEFAULT 35")
+        if 'verify_mode_direction' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN verify_mode_direction TEXT NOT NULL DEFAULT 'up'")
+        if 'verify_mode_bpm' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN verify_mode_bpm INTEGER NOT NULL DEFAULT 60")
+        if 'verify_mode_step_hold' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN verify_mode_step_hold TEXT NOT NULL DEFAULT 'instant'")
+        if 'verify_mode_save_history' not in existing_settings_cols:
+            conn.execute("ALTER TABLE app_settings ADD COLUMN verify_mode_save_history TEXT NOT NULL DEFAULT 'yes'")
         if 'note_display_mode' in existing_settings_cols:
             conn.execute("ALTER TABLE app_settings DROP COLUMN note_display_mode")
         conn.execute('''
@@ -121,6 +134,7 @@ def init_db():
             'notes_total':   "ALTER TABLE history ADD COLUMN notes_total INTEGER NOT NULL DEFAULT 0",
             'accuracy':      "ALTER TABLE history ADD COLUMN accuracy REAL NOT NULL DEFAULT 0.0",
             'profile_id':    "ALTER TABLE history ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1",
+            'phase':         "ALTER TABLE history ADD COLUMN phase TEXT NOT NULL DEFAULT 'practice'",
         }
         for col, ddl in migrations.items():
             if col not in existing_cols:
@@ -137,6 +151,8 @@ def init_db():
             'role':          "ALTER TABLE profiles ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
             'is_subject':    "ALTER TABLE profiles ADD COLUMN is_subject TEXT NOT NULL DEFAULT 'no'",
             'subject_step_index': "ALTER TABLE profiles ADD COLUMN subject_step_index INTEGER NOT NULL DEFAULT 0",
+            'has_seen_tutorial':  "ALTER TABLE profiles ADD COLUMN has_seen_tutorial TEXT NOT NULL DEFAULT 'no'",
+            'subject_stage_phase': "ALTER TABLE profiles ADD COLUMN subject_stage_phase TEXT NOT NULL DEFAULT 'baseline'",
         }
         for col, ddl in profile_migrations.items():
             if col not in existing_profile_cols:
@@ -163,9 +179,15 @@ def init_db():
                 name          TEXT NOT NULL,
                 notes_json    TEXT NOT NULL,
                 arpeggio_json TEXT,
+                key_sig_json  TEXT,
                 created_at    TEXT NOT NULL
             )
         ''')
+        # 既存DBへのカラム追加マイグレーション
+        try:
+            conn.execute('ALTER TABLE scales ADD COLUMN key_sig_json TEXT')
+        except Exception:
+            pass
 
         # 初回起動時だけ、旧スキーマ（静的JSONファイル）の内容をDBに取り込む
         if conn.execute('SELECT COUNT(*) FROM scales').fetchone()[0] == 0:
@@ -203,9 +225,34 @@ def init_db():
                 scale_id      INTEGER NOT NULL,
                 direction     TEXT    NOT NULL,
                 bpm           INTEGER NOT NULL,
+                with_practice TEXT    NOT NULL DEFAULT 'yes',
+                session_end   TEXT    NOT NULL DEFAULT 'no',
                 updated_at    TEXT    NOT NULL
             )
         ''')
+        existing_step_cols = {row[1] for row in conn.execute('PRAGMA table_info(subject_assignment_steps)')}
+        if 'with_practice' not in existing_step_cols:
+            conn.execute("ALTER TABLE subject_assignment_steps ADD COLUMN with_practice TEXT NOT NULL DEFAULT 'yes'")
+        if 'session_end' not in existing_step_cols:
+            conn.execute("ALTER TABLE subject_assignment_steps ADD COLUMN session_end TEXT NOT NULL DEFAULT 'no'")
+
+        # 検証モード（管理者が自分のアカウントで被験者フローを体験する機能）で使う、
+        # 音階SUBJECT_ROADMAP_LENGTH個のロードマップ。管理者全体で共通の1つだけを持つ
+        # （被験者ごとではない）。未設定（0行）の場合は、登録済みの音階から自動で仮に選ぶ
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS verify_mode_scale_steps (
+                step_order    INTEGER PRIMARY KEY,
+                category_key  TEXT    NOT NULL,
+                scale_id      INTEGER NOT NULL,
+                with_practice TEXT    NOT NULL DEFAULT 'yes',
+                session_end   TEXT    NOT NULL DEFAULT 'no'
+            )
+        ''')
+        existing_verify_step_cols = {row[1] for row in conn.execute('PRAGMA table_info(verify_mode_scale_steps)')}
+        if 'with_practice' not in existing_verify_step_cols:
+            conn.execute("ALTER TABLE verify_mode_scale_steps ADD COLUMN with_practice TEXT NOT NULL DEFAULT 'yes'")
+        if 'session_end' not in existing_verify_step_cols:
+            conn.execute("ALTER TABLE verify_mode_scale_steps ADD COLUMN session_end TEXT NOT NULL DEFAULT 'no'")
 
         conn.commit()
 
@@ -218,15 +265,22 @@ def login_required(f):
         return f(*args, **kwargs)
     return wrapper
 
-# 自分のデータか、管理者かどうかを判定する
-# （管理者は他人のデータを閲覧できるが、practicing/書き込みは常に自分のアカウントに対してのみ行う）
+# 自分のデータか、管理者・研究者・閲覧者かどうかを判定する
 def can_access_profile(profile_id):
-    return session.get('role') == 'admin' or session.get('profile_id') == profile_id
+    return session.get('role') in ('admin', 'researcher', 'viewer') or session.get('profile_id') == profile_id
 
 # ===== ページ =====
 @app.route('/')
 def home():
     return render_template('index.html')
+
+@app.route('/viewer')
+def viewer_page():
+    if 'profile_id' not in session:
+        return redirect(url_for('home'))
+    if session.get('role') not in ('viewer', 'admin', 'researcher'):
+        return redirect(url_for('home'))
+    return render_template('viewer.html')
 
 # ===== ログイン =====
 @app.route('/api/login', methods=['POST'])
@@ -257,7 +311,8 @@ def login():
     session['profile_id'] = profile['id']
     session['role']       = profile['role']
     return jsonify({
-        'id': profile['id'], 'name': profile['name'], 'role': profile['role'], 'is_subject': profile['is_subject']
+        'id': profile['id'], 'name': profile['name'], 'role': profile['role'],
+        'is_subject': profile['is_subject'], 'has_seen_tutorial': profile['has_seen_tutorial']
     }), 200
 
 # ===== 初回パスワード設定（password_hashがまだ無いアカウント専用） =====
@@ -286,7 +341,8 @@ def set_password():
     session['profile_id'] = profile['id']
     session['role']       = profile['role']
     return jsonify({
-        'id': profile['id'], 'name': profile['name'], 'role': profile['role'], 'is_subject': profile['is_subject']
+        'id': profile['id'], 'name': profile['name'], 'role': profile['role'],
+        'is_subject': profile['is_subject'], 'has_seen_tutorial': profile['has_seen_tutorial']
     }), 200
 
 # ===== ログアウト =====
@@ -303,7 +359,7 @@ def me():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         profile = conn.execute(
-            'SELECT id, name, role, is_subject FROM profiles WHERE id = ?', (session['profile_id'],)
+            'SELECT id, name, role, is_subject, has_seen_tutorial FROM profiles WHERE id = ?', (session['profile_id'],)
         ).fetchone()
     if profile is None:
         session.clear()
@@ -318,13 +374,16 @@ def get_settings():
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             'SELECT result_display_mode, signup_enabled, step_hold_general, pass_threshold, '
-            'correct_cents, close_cents FROM app_settings WHERE id = 1'
+            'correct_cents, close_cents, verify_mode_direction, verify_mode_bpm, '
+            'verify_mode_step_hold, verify_mode_save_history FROM app_settings WHERE id = 1'
         ).fetchone()
     if row is None:
         return jsonify({
             'result_display_mode': 'accuracy', 'signup_enabled': 'yes',
             'step_hold_general': 'no', 'pass_threshold': 80,
-            'correct_cents': 15, 'close_cents': 35
+            'correct_cents': 15, 'close_cents': 35,
+            'verify_mode_direction': 'up', 'verify_mode_bpm': 60,
+            'verify_mode_step_hold': 'instant', 'verify_mode_save_history': 'yes'
         })
     return jsonify(dict(row))
 
@@ -381,6 +440,31 @@ def update_settings():
             return jsonify({'error': 'close_centsは1〜100の整数で指定してください'}), 400
         updates['close_cents'] = close_cents
 
+    # 検証モード（管理者が自分のアカウントで被験者フローを体験するときの練習タイプ・テンポ）
+    if 'verify_mode_direction' in data:
+        if data['verify_mode_direction'] not in VALID_DIRECTIONS:
+            return jsonify({'error': '不正な練習タイプです'}), 400
+        updates['verify_mode_direction'] = data['verify_mode_direction']
+
+    if 'verify_mode_bpm' in data:
+        try:
+            verify_bpm = int(data['verify_mode_bpm'])
+        except (TypeError, ValueError):
+            return jsonify({'error': 'verify_mode_bpmは40〜120の整数で指定してください'}), 400
+        if not (40 <= verify_bpm <= 120):
+            return jsonify({'error': 'verify_mode_bpmは40〜120の整数で指定してください'}), 400
+        updates['verify_mode_bpm'] = verify_bpm
+
+    if 'verify_mode_step_hold' in data:
+        if data['verify_mode_step_hold'] not in ('instant', 'hold'):
+            return jsonify({'error': 'verify_mode_step_holdはinstantかholdで指定してください'}), 400
+        updates['verify_mode_step_hold'] = data['verify_mode_step_hold']
+
+    if 'verify_mode_save_history' in data:
+        if data['verify_mode_save_history'] not in ('yes', 'no'):
+            return jsonify({'error': 'verify_mode_save_historyはyesかnoで指定してください'}), 400
+        updates['verify_mode_save_history'] = data['verify_mode_save_history']
+
     if not updates:
         return jsonify({'error': '更新する項目がありません'}), 400
 
@@ -400,7 +484,8 @@ def update_settings():
         conn.commit()
         row = conn.execute(
             'SELECT result_display_mode, signup_enabled, step_hold_general, pass_threshold, '
-            'correct_cents, close_cents FROM app_settings WHERE id = 1'
+            'correct_cents, close_cents, verify_mode_direction, verify_mode_bpm, '
+            'verify_mode_step_hold, verify_mode_save_history FROM app_settings WHERE id = 1'
         ).fetchone()
 
     return jsonify(dict(row)), 200
@@ -434,10 +519,18 @@ def get_profiles():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         if session.get('role') == 'admin':
-            rows = conn.execute('SELECT id, name, role, is_subject, created_at FROM profiles ORDER BY id').fetchall()
+            rows = conn.execute(
+                '''SELECT p.id, p.name, p.role, p.is_subject, p.created_at,
+                          (SELECT s.with_practice FROM subject_assignment_steps s
+                           WHERE s.profile_id = p.id ORDER BY s.step_order LIMIT 1) AS with_practice
+                   FROM profiles p ORDER BY p.id'''
+            ).fetchall()
         else:
             rows = conn.execute(
-                'SELECT id, name, role, is_subject, created_at FROM profiles WHERE id = ?', (session['profile_id'],)
+                '''SELECT p.id, p.name, p.role, p.is_subject, p.created_at,
+                          (SELECT s.with_practice FROM subject_assignment_steps s
+                           WHERE s.profile_id = p.id ORDER BY s.step_order LIMIT 1) AS with_practice
+                   FROM profiles p WHERE p.id = ?''', (session['profile_id'],)
             ).fetchall()
     return jsonify([dict(row) for row in rows])
 
@@ -466,13 +559,15 @@ def create_profile():
             return jsonify({'error': '新規アカウント作成は現在許可されていません'}), 403
 
     # 管理者が代理作成する場合は「被験者アカウント」として登録し、決まった練習の
-    # ロードマップ（音階SUBJECT_ROADMAP_LENGTH個を順番に練習）を組み立てる。
-    # 被験者はこの内容を自分では選べず、各音階でテンポ練習→（不合格なら）1音ずつ練習→
-    # 再テンポ練習…を合格するまで繰り返し、合格したら次の音階に進む。
-    # 音階そのものはまだ研究用に決まっていないため、登録済みの音階から仮に選ぶ
-    # （方向・テンポは管理者が指定し、6音階すべてに共通で使う）
+    # 管理者が代理作成する場合のロールと被験者フラグを決める
+    # account_type: 'subject'（被験者）/ 'researcher'（研究者）/ 未指定（通常ユーザー）
+    account_type = data.get('account_type', 'subject') if is_admin_request else None
+    new_role      = 'researcher' if account_type == 'researcher' else 'user'
+    new_is_subject = 'yes' if (is_admin_request and account_type != 'researcher') else 'no'
+
+    # 被験者アカウントの場合のみロードマップを組み立てる
     roadmap_steps = None
-    if is_admin_request:
+    if is_admin_request and account_type != 'researcher':
         direction = data.get('direction')
         if direction not in VALID_DIRECTIONS:
             return jsonify({'error': '不正な練習タイプです'}), 400
@@ -483,31 +578,67 @@ def create_profile():
         if not (40 <= bpm <= 120):
             return jsonify({'error': 'テンポは40〜120の範囲で指定してください'}), 400
 
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            scale_rows = conn.execute('SELECT id, category_key FROM scales ORDER BY id').fetchall()
-        if not scale_rows:
-            return jsonify({'error': '音階が1つも登録されていません。先に「設定」から音階を追加してください'}), 400
+        # アプリ練習あり/なしを受け取る（グループ割り当て）
+        with_practice = data.get('with_practice', 'no')
+        if with_practice not in ('yes', 'no'):
+            return jsonify({'error': 'with_practiceはyesかnoで指定してください'}), 400
 
-        # 登録済みの音階が6個未満の場合は、先頭から繰り返して6ステップ分埋める（仮の割り当てのため）
-        roadmap_steps = [
-            (i, scale_rows[i % len(scale_rows)]['category_key'], scale_rows[i % len(scale_rows)]['id'], direction, bpm)
-            for i in range(SUBJECT_ROADMAP_LENGTH)
-        ]
+        # 4音階（ペア1×2音階 + ペア2×2音階）を受け取る。未指定ならDBから自動選択
+        scales_in = data.get('scales')
+        if scales_in and isinstance(scales_in, list) and len(scales_in) == 4:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                validated_scales = []
+                for s in scales_in:
+                    cat = s.get('category_key') if isinstance(s, dict) else None
+                    if cat not in CATEGORY_LABELS:
+                        return jsonify({'error': '不正なカテゴリーです'}), 400
+                    try:
+                        sid = int(s.get('scale_id'))
+                    except (TypeError, ValueError):
+                        return jsonify({'error': '音階を指定してください'}), 400
+                    row = conn.execute(
+                        'SELECT id FROM scales WHERE id = ? AND category_key = ?', (sid, cat)
+                    ).fetchone()
+                    if row is None:
+                        return jsonify({'error': '指定された音階が見つかりません'}), 400
+                    validated_scales.append({'category_key': cat, 'scale_id': sid})
+        else:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                scale_rows = conn.execute('SELECT id, category_key FROM scales ORDER BY id').fetchall()
+            if not scale_rows:
+                return jsonify({'error': '音階が1つも登録されていません。先に「設定」から音階を追加してください'}), 400
+            validated_scales = [
+                {'category_key': scale_rows[i % len(scale_rows)]['category_key'],
+                 'scale_id':     scale_rows[i % len(scale_rows)]['id']}
+                for i in range(4)
+            ]
+
+        # 16ステップのロードマップを生成（ペア1×4日 + ペア2×4日、with_practiceはグループ共通）
+        roadmap_steps = []
+        for pair_idx in range(2):
+            s1 = validated_scales[pair_idx * 2]
+            s2 = validated_scales[pair_idx * 2 + 1]
+            for day in range(4):
+                is_last = (pair_idx == 1 and day == 3)
+                roadmap_steps.append((len(roadmap_steps), s1['category_key'], s1['scale_id'], direction, bpm, with_practice, 'no'))
+                se = 'no' if is_last else 'yes'
+                roadmap_steps.append((len(roadmap_steps), s2['category_key'], s2['scale_id'], direction, bpm, with_practice, se))
 
     created_at = datetime.now().strftime('%Y/%m/%d %H:%M')
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.execute(
                 'INSERT INTO profiles (name, created_at, password_hash, role, is_subject) VALUES (?, ?, ?, ?, ?)',
-                (name, created_at, generate_password_hash(password), 'user', 'yes' if is_admin_request else 'no')
+                (name, created_at, generate_password_hash(password), new_role, new_is_subject)
             )
             profile_id = cur.lastrowid
             if roadmap_steps:
                 conn.executemany(
                     'INSERT INTO subject_assignment_steps '
-                    '(profile_id, step_order, category_key, scale_id, direction, bpm, updated_at) '
-                    'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    '(profile_id, step_order, category_key, scale_id, direction, bpm, with_practice, session_end, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     [(profile_id,) + step + (created_at,) for step in roadmap_steps]
                 )
             conn.commit()
@@ -520,8 +651,8 @@ def create_profile():
         session['profile_id'] = profile_id
         session['role']       = 'user'
     return jsonify({
-        'id': profile_id, 'name': name, 'role': 'user', 'created_at': created_at,
-        'is_subject': 'yes' if is_admin_request else 'no'
+        'id': profile_id, 'name': name, 'role': new_role, 'created_at': created_at,
+        'is_subject': new_is_subject, 'has_seen_tutorial': 'no'
     }), 201
 
 # ===== アカウント削除（本人か管理者のみ） =====
@@ -568,10 +699,14 @@ def get_history():
 
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            'SELECT * FROM history WHERE profile_id = ? ORDER BY id DESC LIMIT 100',
-            (profile_id,)
-        ).fetchall()
+        rows = conn.execute('''
+            SELECT h.*, (COUNT(nr.id) > 0) AS has_note_results
+            FROM history h
+            LEFT JOIN note_results nr ON nr.history_id = h.id
+            WHERE h.profile_id = ?
+            GROUP BY h.id
+            ORDER BY h.id DESC LIMIT 100
+        ''', (profile_id,)).fetchall()
     return jsonify([dict(row) for row in rows])
 
 # ===== 履歴を保存 =====
@@ -590,12 +725,18 @@ def save_history():
     accuracy      = round(notes_correct / notes_total * 100, 1) if notes_total > 0 else 0.0
     practiced_at  = datetime.now().strftime('%Y/%m/%d %H:%M')
 
+    # 被験者の事前演奏・テスト演奏を、通常の練習と区別して記録するためのタグ。
+    # 事前演奏(baseline)・テスト演奏(test)以外（自由練習や一般の練習）はすべてpracticeとして扱う
+    phase = data.get('phase')
+    if phase not in ('baseline', 'test'):
+        phase = 'practice'
+
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute('''
             INSERT INTO history
-              (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at))
+              (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at, phase)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at, phase))
         history_id = cur.lastrowid
 
         if note_results:
@@ -613,7 +754,7 @@ def save_history():
         'scale': scale, 'direction': direction, 'mode': mode,
         'bpm': bpm, 'accuracy': accuracy,
         'notes_correct': notes_correct, 'notes_total': notes_total,
-        'time': practiced_at
+        'time': practiced_at, 'phase': phase
     }), 201
 
 # ===== 履歴を全件削除（プロフィール単位。本人か管理者のみ） =====
@@ -632,6 +773,166 @@ def clear_history():
         conn.execute('DELETE FROM history WHERE profile_id = ?', (profile_id,))
         conn.commit()
     return jsonify({'message': 'deleted'}), 200
+
+# ===== 全アカウントの履歴一覧（管理者・研究者のみ） =====
+@app.route('/api/all-history', methods=['GET'])
+@login_required
+def get_all_history():
+    if session.get('role') not in ('admin', 'researcher'):
+        return jsonify({'error': '権限がありません'}), 403
+
+    limit  = request.args.get('limit',  type=int, default=500)
+    offset = request.args.get('offset', type=int, default=0)
+    profile_filter = request.args.get('profile_id', type=int)
+
+    query  = 'SELECT h.*, p.name AS profile_name FROM history h JOIN profiles p ON h.profile_id = p.id'
+    params = []
+    if profile_filter:
+        query  += ' WHERE h.profile_id = ?'
+        params.append(profile_filter)
+    query += ' ORDER BY h.id DESC LIMIT ? OFFSET ?'
+    params += [limit, offset]
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(query, params).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+# ===== 履歴1件を新規作成（管理者・研究者のみ、任意のプロフィールに作成可） =====
+@app.route('/api/all-history', methods=['POST'])
+@login_required
+def create_history_for_profile():
+    if session.get('role') not in ('admin', 'researcher'):
+        return jsonify({'error': '権限がありません'}), 403
+    data = request.get_json() or {}
+    profile_id = data.get('profile_id')
+    if not profile_id:
+        return jsonify({'error': 'profile_id は必須です'}), 400
+    with sqlite3.connect(DB_PATH) as conn:
+        profile = conn.execute('SELECT id, name FROM profiles WHERE id = ?', (profile_id,)).fetchone()
+    if not profile:
+        return jsonify({'error': '指定したアカウントが見つかりません'}), 404
+    scale         = data.get('scale', '')
+    direction     = data.get('direction', 'up')
+    mode          = data.get('mode', 'tempo')
+    bpm_raw       = data.get('bpm')
+    bpm           = int(bpm_raw) if bpm_raw else None
+    notes_correct = int(data.get('notes_correct', 0))
+    notes_total   = int(data.get('notes_total', 0))
+    accuracy      = round(notes_correct / notes_total * 100, 1) if notes_total > 0 else 0.0
+    phase         = data.get('phase', 'practice')
+    if phase not in ('baseline', 'test', 'practice'):
+        phase = 'practice'
+    practiced_at  = data.get('practiced_at') or datetime.now().strftime('%Y/%m/%d %H:%M')
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute('''
+            INSERT INTO history
+              (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at, phase)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (profile_id, scale, direction, mode, bpm, notes_correct, notes_total, accuracy, practiced_at, phase))
+        conn.commit()
+    return jsonify({'id': cur.lastrowid, 'profile_name': profile[1], 'message': 'created'}), 201
+
+# ===== 指定日のbaseline記録から不正確な音符を取得 =====
+@app.route('/api/history/baseline-wrong-notes', methods=['GET'])
+@login_required
+def get_baseline_wrong_notes():
+    profile_id = request.args.get('profile_id', type=int)
+    date_str   = request.args.get('date', '')  # YYYY-MM-DD
+    if not profile_id or not date_str:
+        return jsonify({'error': 'パラメータが不足しています'}), 400
+    if not can_access_profile(profile_id):
+        return jsonify({'error': '権限がありません'}), 403
+
+    # DB上の日付フォーマット: "YYYY/MM/DD HH:MM"
+    db_date_prefix = date_str.replace('-', '/') + '%'
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute('''
+            SELECT id FROM history
+            WHERE profile_id = ? AND phase = 'baseline' AND practiced_at LIKE ?
+            ORDER BY id DESC LIMIT 1
+        ''', (profile_id, db_date_prefix)).fetchone()
+
+        if row is None:
+            return jsonify({'error': 'この日の事前計測記録が見つかりません'}), 404
+
+        notes = conn.execute('''
+            SELECT note, string, outcome, cents FROM note_results
+            WHERE history_id = ? AND outcome != 'correct'
+            ORDER BY id
+        ''', (row['id'],)).fetchall()
+
+    if not notes:
+        return jsonify({'error': '事前計測に不正確な音符がありません（全問正解）'}), 404
+
+    return jsonify({'notes': [dict(n) for n in notes]})
+
+# ===== 履歴1件の音符結果を取得 =====
+@app.route('/api/history/<int:history_id>/notes', methods=['GET'])
+@login_required
+def get_history_notes(history_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute('SELECT profile_id FROM history WHERE id = ?', (history_id,)).fetchone()
+        if not row or not can_access_profile(row['profile_id']):
+            return jsonify({'error': '権限がありません'}), 403
+        notes = conn.execute(
+            'SELECT note, string, outcome, cents FROM note_results WHERE history_id = ? ORDER BY id',
+            (history_id,)
+        ).fetchall()
+    return jsonify([dict(n) for n in notes])
+
+# ===== 履歴1件を編集（管理者・研究者のみ） =====
+@app.route('/api/history/<int:history_id>', methods=['PATCH'])
+@login_required
+def update_history_record(history_id):
+    if session.get('role') not in ('admin', 'researcher'):
+        return jsonify({'error': '権限がありません'}), 403
+
+    data = request.get_json() or {}
+    allowed = {'scale', 'direction', 'mode', 'bpm', 'notes_correct', 'notes_total', 'practiced_at', 'phase'}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return jsonify({'error': '更新するフィールドがありません'}), 400
+
+    if 'notes_correct' in updates or 'notes_total' in updates:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute('SELECT notes_correct, notes_total FROM history WHERE id = ?', (history_id,)).fetchone()
+        if row is None:
+            return jsonify({'error': '記録が見つかりません'}), 404
+        nc = int(updates.get('notes_correct', row[0]))
+        nt = int(updates.get('notes_total',   row[1]))
+        updates['notes_correct'] = nc
+        updates['notes_total']   = nt
+        updates['accuracy']      = round(nc / nt * 100, 1) if nt > 0 else 0.0
+
+    set_clause = ', '.join(f'{k} = ?' for k in updates)
+    values     = list(updates.values()) + [history_id]
+
+    with sqlite3.connect(DB_PATH) as conn:
+        affected = conn.execute(f'UPDATE history SET {set_clause} WHERE id = ?', values).rowcount
+        conn.commit()
+    if affected == 0:
+        return jsonify({'error': '記録が見つかりません'}), 404
+    return jsonify({'message': 'updated'})
+
+# ===== 履歴1件を削除（管理者・研究者のみ） =====
+@app.route('/api/history/<int:history_id>', methods=['DELETE'])
+@login_required
+def delete_history_record(history_id):
+    if session.get('role') not in ('admin', 'researcher'):
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        affected = conn.execute('DELETE FROM history WHERE id = ?', (history_id,)).rowcount
+        if affected:
+            conn.execute('DELETE FROM note_results WHERE history_id = ?', (history_id,))
+        conn.commit()
+    if affected == 0:
+        return jsonify({'error': '記録が見つかりません'}), 404
+    return jsonify({'message': 'deleted'})
 
 # ===== グラフ用統計データ =====
 @app.route('/api/stats', methods=['GET'])
@@ -671,9 +972,20 @@ def get_stats():
             ORDER BY avg_accuracy DESC
         ''', (profile_id,)).fetchall()
 
+        # 練習カレンダー用：練習した日付（モード問わず）。dailyの30件制限とは別に、
+        # カレンダーで月をまたいでも表示できるよう、直近400日分の日付を返す
+        practiced_dates = conn.execute('''
+            SELECT DISTINCT substr(practiced_at, 1, 10) as date
+            FROM history
+            WHERE profile_id = ?
+            ORDER BY date DESC
+            LIMIT 400
+        ''', (profile_id,)).fetchall()
+
     return jsonify({
         'daily': [dict(r) for r in daily],
-        'by_scale': [dict(r) for r in by_scale]
+        'by_scale': [dict(r) for r in by_scale],
+        'practiced_dates': [r['date'] for r in practiced_dates]
     })
 
 # ===== 音ごとの苦手分析 =====
@@ -736,19 +1048,20 @@ def get_subject_assignment():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         steps = conn.execute(
-            'SELECT step_order, category_key, scale_id, direction, bpm FROM subject_assignment_steps '
+            'SELECT step_order, category_key, scale_id, direction, bpm, with_practice, session_end FROM subject_assignment_steps '
             'WHERE profile_id = ? ORDER BY step_order',
             (profile_id,)
         ).fetchall()
         profile_row = conn.execute(
-            'SELECT subject_step_index FROM profiles WHERE id = ?', (profile_id,)
+            'SELECT subject_step_index, subject_stage_phase FROM profiles WHERE id = ?', (profile_id,)
         ).fetchone()
 
     if not steps:
         return jsonify({'error': '練習内容が割り当てられていません'}), 404
     return jsonify({
         'steps': [dict(s) for s in steps],
-        'current_step': profile_row[0] if profile_row else 0
+        'current_step': profile_row[0] if profile_row else 0,
+        'stage_phase': profile_row[1] if profile_row else 'baseline'
     })
 
 # ===== 被験者の練習ロードマップ（音階6つ）を管理者が変更する =====
@@ -781,8 +1094,8 @@ def update_subject_assignment(profile_id):
         return jsonify({'error': 'テンポは40〜120の範囲で指定してください'}), 400
 
     steps_in = data.get('steps')
-    if not isinstance(steps_in, list) or len(steps_in) != SUBJECT_ROADMAP_LENGTH:
-        return jsonify({'error': f'音階は{SUBJECT_ROADMAP_LENGTH}個指定してください'}), 400
+    if not isinstance(steps_in, list) or not (1 <= len(steps_in) <= MAX_ROADMAP_STEPS):
+        return jsonify({'error': f'音階は1〜{MAX_ROADMAP_STEPS}個で指定してください'}), 400
 
     validated_steps = []
     with sqlite3.connect(DB_PATH) as conn:
@@ -799,16 +1112,23 @@ def update_subject_assignment(profile_id):
             ).fetchone()
             if scale_row is None:
                 return jsonify({'error': '指定された音階が見つかりません'}), 400
-            validated_steps.append((category_key, scale_id))
+            with_practice = step.get('with_practice', 'yes') if isinstance(step, dict) else 'yes'
+            if with_practice not in ('yes', 'no'):
+                return jsonify({'error': 'with_practiceはyesかnoで指定してください'}), 400
+            session_end = step.get('session_end', 'no') if isinstance(step, dict) else 'no'
+            if session_end not in ('yes', 'no'):
+                return jsonify({'error': 'session_endはyesかnoで指定してください'}), 400
+            validated_steps.append((category_key, scale_id, with_practice, session_end))
 
     updated_at = datetime.now().strftime('%Y/%m/%d %H:%M')
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('DELETE FROM subject_assignment_steps WHERE profile_id = ?', (profile_id,))
         conn.executemany(
             'INSERT INTO subject_assignment_steps '
-            '(profile_id, step_order, category_key, scale_id, direction, bpm, updated_at) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [(profile_id, i, cat, sid, direction, bpm, updated_at) for i, (cat, sid) in enumerate(validated_steps)]
+            '(profile_id, step_order, category_key, scale_id, direction, bpm, with_practice, session_end, updated_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [(profile_id, i, cat, sid, direction, bpm, wp, se, updated_at)
+             for i, (cat, sid, wp, se) in enumerate(validated_steps)]
         )
         conn.execute('UPDATE profiles SET subject_step_index = 0 WHERE id = ?', (profile_id,))
         conn.commit()
@@ -830,10 +1150,119 @@ def advance_subject_progress():
             'SELECT subject_step_index FROM profiles WHERE id = ?', (profile_id,)
         ).fetchone()[0]
         new_index = min(current + 1, step_count)
-        conn.execute('UPDATE profiles SET subject_step_index = ? WHERE id = ?', (new_index, profile_id))
+        # 次のステージ（音階）に進むので、そのステージのフェーズは必ず事前演奏からやり直す
+        conn.execute(
+            "UPDATE profiles SET subject_step_index = ?, subject_stage_phase = 'baseline' WHERE id = ?",
+            (new_index, profile_id)
+        )
         conn.commit()
 
     return jsonify({'current_step': new_index, 'total_steps': step_count}), 200
+
+# ===== 被験者の今のステージ（音階）内でのフェーズを変更する =====
+# baseline（事前演奏）→practice（自由練習）→test（テスト演奏）の間を移動するときに呼ぶ。
+# 次のステージに進むとき（baselineへのリセット）は advance_subject_progress が行うので、
+# ここでは同じステージ内での移動（baseline→practice、test失敗→practiceなど）だけを扱う
+@app.route('/api/subject-progress/phase', methods=['POST'])
+@login_required
+def set_subject_stage_phase():
+    data  = request.get_json() or {}
+    phase = data.get('phase')
+    if phase not in ('baseline', 'practice', 'test'):
+        return jsonify({'error': 'phaseはbaseline・practice・testのいずれかで指定してください'}), 400
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            'UPDATE profiles SET subject_stage_phase = ? WHERE id = ?', (phase, session['profile_id'])
+        )
+        conn.commit()
+
+    return jsonify({'stage_phase': phase}), 200
+
+# ===== 被験者チュートリアルを既読にする =====
+# 必ず本人のアカウントに対してのみ（他人の既読状態を操作できないように）
+@app.route('/api/subject-tutorial/seen', methods=['POST'])
+@login_required
+def mark_subject_tutorial_seen():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE profiles SET has_seen_tutorial = 'yes' WHERE id = ?", (session['profile_id'],)
+        )
+        conn.commit()
+    return jsonify({'has_seen_tutorial': 'yes'}), 200
+
+# ===== 検証モードで使う音階ロードマップ（音階6つ）を取得 =====
+# 管理者が「検証モード」タブで体験するときに使う、管理者全体で共通の設定。
+# 未設定（steps が空）の場合は、フロント側が登録済みの音階から自動で仮の6つを選ぶ
+@app.route('/api/verify-mode-scales', methods=['GET'])
+@login_required
+def get_verify_mode_scales():
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            'SELECT step_order, category_key, scale_id, with_practice, session_end FROM verify_mode_scale_steps ORDER BY step_order'
+        ).fetchall()
+    return jsonify({'steps': [dict(r) for r in rows]})
+
+# ===== 検証モードの音階ロードマップを設定する =====
+@app.route('/api/verify-mode-scales', methods=['PUT'])
+@login_required
+def update_verify_mode_scales():
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    data     = request.get_json() or {}
+    steps_in = data.get('steps')
+    if not isinstance(steps_in, list) or not (1 <= len(steps_in) <= MAX_ROADMAP_STEPS):
+        return jsonify({'error': f'音階は1〜{MAX_ROADMAP_STEPS}個で指定してください'}), 400
+
+    validated_steps = []
+    with sqlite3.connect(DB_PATH) as conn:
+        for step in steps_in:
+            category_key = step.get('category_key') if isinstance(step, dict) else None
+            if category_key not in CATEGORY_LABELS:
+                return jsonify({'error': '不正なカテゴリーです'}), 400
+            try:
+                scale_id = int(step.get('scale_id'))
+            except (TypeError, ValueError):
+                return jsonify({'error': '音階を指定してください'}), 400
+            scale_row = conn.execute(
+                'SELECT id FROM scales WHERE id = ? AND category_key = ?', (scale_id, category_key)
+            ).fetchone()
+            if scale_row is None:
+                return jsonify({'error': '指定された音階が見つかりません'}), 400
+            with_practice = step.get('with_practice', 'yes') if isinstance(step, dict) else 'yes'
+            if with_practice not in ('yes', 'no'):
+                return jsonify({'error': 'with_practiceはyesかnoで指定してください'}), 400
+            session_end = step.get('session_end', 'no') if isinstance(step, dict) else 'no'
+            if session_end not in ('yes', 'no'):
+                return jsonify({'error': 'session_endはyesかnoで指定してください'}), 400
+            validated_steps.append((category_key, scale_id, with_practice, session_end))
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('DELETE FROM verify_mode_scale_steps')
+        conn.executemany(
+            'INSERT INTO verify_mode_scale_steps (step_order, category_key, scale_id, with_practice, session_end) VALUES (?, ?, ?, ?, ?)',
+            [(i, cat, sid, wp, se) for i, (cat, sid, wp, se) in enumerate(validated_steps)]
+        )
+        conn.commit()
+
+    return jsonify({'message': 'updated'}), 200
+
+# ===== 検証モードの音階ロードマップを未設定（自動選択）に戻す =====
+@app.route('/api/verify-mode-scales', methods=['DELETE'])
+@login_required
+def reset_verify_mode_scales():
+    if session.get('role') != 'admin':
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('DELETE FROM verify_mode_scale_steps')
+        conn.commit()
+    return jsonify({'message': 'reset'}), 200
 
 # ===== 音階（調）一覧を取得 =====
 # 練習画面のセレクトボックスに使うため、誰でも読める（ログイン不要）
@@ -851,6 +1280,7 @@ def get_scales():
             'name':     row['name'],
             'notes':    json.loads(row['notes_json']),
             'arpeggio': json.loads(row['arpeggio_json']) if row['arpeggio_json'] else None,
+            'key_sig':  json.loads(row['key_sig_json'])  if row['key_sig_json']  else {},
         }
     return jsonify({'categories': categories})
 
@@ -902,18 +1332,21 @@ def create_scale():
     if session.get('role') != 'admin':
         return jsonify({'error': '権限がありません'}), 403
 
-    category_key, name, notes, arpeggio, error = validate_scale_payload(request.get_json() or {})
+    data = request.get_json() or {}
+    category_key, name, notes, arpeggio, error = validate_scale_payload(data)
     if error:
         return jsonify({'error': error}), 400
 
+    key_sig = data.get('key_sig') or {}
     created_at = datetime.now().strftime('%Y/%m/%d %H:%M')
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            'INSERT INTO scales (category_key, name, notes_json, arpeggio_json, created_at) VALUES (?, ?, ?, ?, ?)',
+            'INSERT INTO scales (category_key, name, notes_json, arpeggio_json, key_sig_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
             (
                 category_key, name,
                 json.dumps(notes, ensure_ascii=False),
                 json.dumps(arpeggio, ensure_ascii=False) if arpeggio else None,
+                json.dumps(key_sig, ensure_ascii=False) if key_sig else None,
                 created_at,
             )
         )
@@ -929,17 +1362,20 @@ def update_scale(scale_id):
     if session.get('role') != 'admin':
         return jsonify({'error': '権限がありません'}), 403
 
-    category_key, name, notes, arpeggio, error = validate_scale_payload(request.get_json() or {})
+    data = request.get_json() or {}
+    category_key, name, notes, arpeggio, error = validate_scale_payload(data)
     if error:
         return jsonify({'error': error}), 400
 
+    key_sig = data.get('key_sig') or {}
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            'UPDATE scales SET category_key = ?, name = ?, notes_json = ?, arpeggio_json = ? WHERE id = ?',
+            'UPDATE scales SET category_key = ?, name = ?, notes_json = ?, arpeggio_json = ?, key_sig_json = ? WHERE id = ?',
             (
                 category_key, name,
                 json.dumps(notes, ensure_ascii=False),
                 json.dumps(arpeggio, ensure_ascii=False) if arpeggio else None,
+                json.dumps(key_sig, ensure_ascii=False) if key_sig else None,
                 scale_id,
             )
         )
@@ -964,6 +1400,241 @@ def delete_scale(scale_id):
             return jsonify({'error': '指定された音階が見つかりません'}), 404
 
     return jsonify({'deleted': True}), 200
+
+# ===== 研究分析データ（管理者・研究者用） =====
+# 被験者全員の事前/事後計測記録を、被験者・音階・日番号ごとに集計して返す
+@app.route('/api/research-analysis', methods=['GET'])
+@login_required
+def research_analysis():
+    if session.get('role') not in ('admin', 'researcher'):
+        return jsonify({'error': '権限がありません'}), 403
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute('''
+            SELECT h.profile_id, p.name AS subject_name,
+                   h.scale, h.phase, h.accuracy, h.notes_correct, h.notes_total, h.practiced_at
+            FROM history h
+            JOIN profiles p ON p.id = h.profile_id
+            WHERE p.is_subject = 'yes'
+              AND h.phase IN ('baseline', 'test')
+              AND h.mode = 'tempo'
+            ORDER BY h.profile_id, h.scale, h.practiced_at
+        ''').fetchall()
+
+    # 被験者・音階ごとに日番号（1,2,3,4）を割り当てる
+    from collections import defaultdict
+    day_tracker = defaultdict(int)   # (profile_id, scale) → day番号
+    result = []
+    for r in rows:
+        key = (r['profile_id'], r['scale'], r['phase'])
+        day_tracker[key] += 1
+        day_num = day_tracker[(r['profile_id'], r['scale'], 'baseline')] if r['phase'] == 'baseline' \
+                  else day_tracker[(r['profile_id'], r['scale'], 'baseline')]
+        result.append({
+            'subject':     r['subject_name'],
+            'profile_id':  r['profile_id'],
+            'scale':       r['scale'],
+            'phase':       r['phase'],
+            'day':         day_tracker[(r['profile_id'], r['scale'], r['phase'])],
+            'accuracy':    r['accuracy'],
+            'practiced_at': r['practiced_at'],
+        })
+
+    return jsonify(result)
+
+
+VIEWER_ROLES = ('viewer', 'admin', 'researcher')
+
+# ===== 閲覧用API =====
+
+@app.route('/api/viewer/subjects', methods=['GET'])
+@login_required
+def viewer_subjects():
+    if session.get('role') not in VIEWER_ROLES:
+        return jsonify({'error': '権限がありません'}), 403
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profiles = conn.execute(
+            "SELECT id, name, subject_step_index FROM profiles WHERE is_subject='yes' ORDER BY id"
+        ).fetchall()
+        result = []
+        for p in profiles:
+            steps = conn.execute(
+                'SELECT step_order, scale_id FROM subject_assignment_steps WHERE profile_id=? ORDER BY step_order LIMIT 4',
+                (p['id'],)
+            ).fetchall()
+            # phase1: steps 0-7 (scale_ids at steps 0,1), phase2: steps 8-15 (scale_ids at steps 8,9)
+            scale_ids = {s['step_order']: s['scale_id'] for s in steps}
+            scale_names = {}
+            for sid in set(scale_ids.values()):
+                row = conn.execute('SELECT name FROM scales WHERE id=?', (sid,)).fetchone()
+                if row:
+                    scale_names[sid] = row['name']
+            phase1 = [scale_names.get(scale_ids.get(0, 0), ''), scale_names.get(scale_ids.get(1, 0), '')]
+            # get phase2 scale ids (steps 8,9)
+            steps2 = conn.execute(
+                'SELECT step_order, scale_id FROM subject_assignment_steps WHERE profile_id=? AND step_order IN (8,9)',
+                (p['id'],)
+            ).fetchall()
+            scale_ids2 = {s['step_order']: s['scale_id'] for s in steps2}
+            for sid in set(scale_ids2.values()):
+                row = conn.execute('SELECT name FROM scales WHERE id=?', (sid,)).fetchone()
+                if row:
+                    scale_names[sid] = row['name']
+            phase2 = [scale_names.get(scale_ids2.get(8, 0), ''), scale_names.get(scale_ids2.get(9, 0), '')]
+            wp_row = conn.execute(
+                'SELECT with_practice FROM subject_assignment_steps WHERE profile_id=? ORDER BY step_order LIMIT 1',
+                (p['id'],)
+            ).fetchone()
+            result.append({
+                'id': p['id'],
+                'name': p['name'],
+                'step_index': p['subject_step_index'],
+                'phase1_scales': [s for s in phase1 if s],
+                'phase2_scales': [s for s in phase2 if s],
+                'with_practice': wp_row['with_practice'] if wp_row else 'no',
+            })
+    return jsonify(result)
+
+
+@app.route('/api/viewer/subject/<int:pid>/timeline', methods=['GET'])
+@login_required
+def viewer_subject_timeline(pid):
+    if session.get('role') not in VIEWER_ROLES:
+        return jsonify({'error': '権限がありません'}), 403
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute('''
+            SELECT phase, scale, direction, practiced_at, accuracy, notes_correct, notes_total, mode, bpm
+            FROM history
+            WHERE profile_id=?
+            ORDER BY id
+        ''', (pid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/viewer/group-stats', methods=['GET'])
+@login_required
+def viewer_group_stats():
+    if session.get('role') not in VIEWER_ROLES:
+        return jsonify({'error': '権限がありません'}), 403
+    scale = request.args.get('scale', '')
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        scale_cond = 'AND h.scale = ?' if scale else ''
+        params = [scale] if scale else []
+        # 被験者ごとのbaseline/test平均 + アプリ練習有無
+        subject_rows = conn.execute(f'''
+            SELECT p.id, p.name,
+                   AVG(CASE WHEN h.phase='baseline' THEN h.accuracy END) as baseline_avg,
+                   AVG(CASE WHEN h.phase='test'     THEN h.accuracy END) as test_avg,
+                   (SELECT s.with_practice FROM subject_assignment_steps s
+                    WHERE s.profile_id = p.id ORDER BY s.step_order LIMIT 1) as with_practice
+            FROM profiles p
+            JOIN history h ON h.profile_id = p.id
+            WHERE p.is_subject='yes' AND h.phase IN ('baseline','test') {scale_cond}
+            GROUP BY p.id
+            ORDER BY p.id
+        ''', params).fetchall()
+        # 音階別baseline/test平均（常に全音階）
+        scale_rows = conn.execute('''
+            SELECT h.scale,
+                   AVG(CASE WHEN h.phase='baseline' THEN h.accuracy END) as baseline_avg,
+                   AVG(CASE WHEN h.phase='test'     THEN h.accuracy END) as test_avg,
+                   COUNT(*) as count
+            FROM history h
+            JOIN profiles p ON p.id = h.profile_id
+            WHERE p.is_subject='yes' AND h.mode='tempo' AND h.phase IN ('baseline','test')
+            GROUP BY h.scale
+            ORDER BY h.scale
+        ''').fetchall()
+
+    subjects = []
+    improvements = []
+    for r in subject_rows:
+        b = round(r['baseline_avg'] or 0, 1)
+        t = round(r['test_avg'] or 0, 1)
+        imp = round(t - b, 1)
+        improvements.append(imp)
+        subjects.append({'id': r['id'], 'name': r['name'],
+                         'baseline_avg': b, 'test_avg': t, 'improvement': imp,
+                         'with_practice': (r['with_practice'] or 'no') == 'yes'})
+
+    overall = round(sum(improvements) / len(improvements), 1) if improvements else 0
+    by_scale = [{'scale': r['scale'],
+                 'baseline_avg': round(r['baseline_avg'] or 0, 1),
+                 'test_avg':     round(r['test_avg'] or 0, 1),
+                 'count':        r['count']} for r in scale_rows]
+    return jsonify({'subjects': subjects, 'by_scale': by_scale, 'overall_improvement': overall})
+
+
+@app.route('/api/viewer/group-timeline', methods=['GET'])
+@login_required
+def viewer_group_timeline():
+    if session.get('role') not in VIEWER_ROLES:
+        return jsonify({'error': '権限がありません'}), 403
+    scale = request.args.get('scale', '')
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        profiles = conn.execute(
+            "SELECT id, name FROM profiles WHERE is_subject='yes' ORDER BY id"
+        ).fetchall()
+        result = []
+        for p in profiles:
+            scale_cond = 'AND scale = ?' if scale else ''
+            params = (p['id'], scale) if scale else (p['id'],)
+            rows = conn.execute(f'''
+                SELECT phase, practiced_at, AVG(accuracy) as accuracy
+                FROM history
+                WHERE profile_id=? AND phase IN ('baseline','test') {scale_cond}
+                GROUP BY phase, substr(practiced_at,1,10)
+                ORDER BY practiced_at
+            ''', params).fetchall()
+            wp_row = conn.execute(
+                'SELECT with_practice FROM subject_assignment_steps WHERE profile_id=? ORDER BY step_order LIMIT 1',
+                (p['id'],)
+            ).fetchone()
+            with_practice = (wp_row['with_practice'] if wp_row else 'no') == 'yes'
+            # 日付→index(Day1...)
+            dates = sorted(set(r['practiced_at'][:10] for r in rows))
+            day_map = {d: i+1 for i, d in enumerate(dates)}
+            days = {}
+            for r in rows:
+                d = r['practiced_at'][:10]
+                day = day_map[d]
+                if day not in days:
+                    days[day] = {'day': day, 'date': d}
+                days[day][r['phase']] = round(r['accuracy'], 1)
+            result.append({
+                'id': p['id'], 'name': p['name'], 'with_practice': with_practice,
+                'days': sorted(days.values(), key=lambda x: x['day'])
+            })
+    return jsonify(result)
+
+
+@app.route('/api/viewer/note-heatmap', methods=['GET'])
+@login_required
+def viewer_note_heatmap():
+    if session.get('role') not in VIEWER_ROLES:
+        return jsonify({'error': '権限がありません'}), 403
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute('''
+            SELECT nr.note,
+                   COUNT(*) as attempts,
+                   ROUND(100.0 * SUM(CASE WHEN nr.outcome='correct' THEN 1 ELSE 0 END) / COUNT(*), 1) as accuracy
+            FROM note_results nr
+            JOIN history h ON h.id = nr.history_id
+            JOIN profiles p ON p.id = h.profile_id
+            WHERE p.is_subject='yes' AND h.phase IN ('baseline','test')
+            GROUP BY nr.note
+            HAVING attempts >= 2
+            ORDER BY accuracy ASC
+            LIMIT 20
+        ''').fetchall()
+    return jsonify([dict(r) for r in rows])
+
 
 if __name__ == '__main__':
     init_db()

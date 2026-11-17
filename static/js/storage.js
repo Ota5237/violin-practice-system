@@ -56,8 +56,8 @@ async function getProfiles() {
   return await res.json();
 }
 
-// roadmapOptions（{direction, bpm}）を渡すと、被験者アカウントとして
-// 「決まった練習のロードマップ」（音階6つを順番に練習する）を割り当てて作成する
+// roadmapOptions（{direction, bpm, account_type}）を渡す。
+// account_type='researcher' のときは研究者アカウント、省略時は被験者アカウントとして作成する
 async function createProfile(name, password, roadmapOptions) {
   const res = await fetch('/api/profiles', {
     method: 'POST',
@@ -84,6 +84,23 @@ async function advanceSubjectProgress() {
   return await res.json();
 }
 
+// 被験者（または検証モード）の、今のステージ内でのフェーズを変更する
+// phaseは 'baseline'（事前演奏）｜'practice'（自由練習）｜'test'（テスト演奏）のいずれか
+async function setSubjectStagePhase(phase) {
+  const res = await apiFetch('/api/subject-progress/phase', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phase })
+  });
+  return await res.json();
+}
+
+// 被験者チュートリアルを既読にする（本人のみ）
+async function markSubjectTutorialSeen() {
+  const res = await apiFetch('/api/subject-tutorial/seen', { method: 'POST' });
+  return await res.json();
+}
+
 // 被験者の練習ロードマップ（音階6つ・方向・テンポ）を管理者が変更する。
 // steps は [{category_key, scale_id}, ...]（6個）、direction/bpmは6つ共通
 async function updateSubjectAssignment(profileId, steps, direction, bpm) {
@@ -97,12 +114,40 @@ async function updateSubjectAssignment(profileId, steps, direction, bpm) {
   return data;
 }
 
+// 検証モード（管理者の体験）で使う音階ロードマップ（{steps}。未設定ならsteps:[]）を取得する
+async function getVerifyModeScales() {
+  const res = await apiFetch('/api/verify-mode-scales');
+  const data = await res.json();
+  if (!res.ok) return { steps: [] };
+  return data;
+}
+
+// 検証モードの音階ロードマップを設定する。stepsは[{category_key, scale_id}, ...]（6個）
+async function updateVerifyModeScales(steps) {
+  const res = await apiFetch('/api/verify-mode-scales', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ steps })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '音階の更新に失敗しました');
+  return data;
+}
+
+// 検証モードの音階ロードマップを未設定（自動選択）に戻す
+async function resetVerifyModeScales() {
+  const res = await apiFetch('/api/verify-mode-scales', { method: 'DELETE' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'リセットに失敗しました');
+  return data;
+}
+
 // 新しい音階（調）を登録する（管理者のみ）。notesは音符データの配列、arpeggioは任意
-async function createScale(categoryKey, name, notes, arpeggio) {
+async function createScale(categoryKey, name, notes, arpeggio, keySig) {
   const res = await apiFetch('/api/scales', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ category_key: categoryKey, name, notes, arpeggio: arpeggio || null })
+    body: JSON.stringify({ category_key: categoryKey, name, notes, arpeggio: arpeggio || null, key_sig: keySig || {} })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || '音階の登録に失敗しました');
@@ -110,11 +155,11 @@ async function createScale(categoryKey, name, notes, arpeggio) {
 }
 
 // 既存の音階（調）を修正する（管理者のみ）
-async function updateScale(scaleId, categoryKey, name, notes, arpeggio) {
+async function updateScale(scaleId, categoryKey, name, notes, arpeggio, keySig) {
   const res = await apiFetch(`/api/scales/${scaleId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ category_key: categoryKey, name, notes, arpeggio: arpeggio || null })
+    body: JSON.stringify({ category_key: categoryKey, name, notes, arpeggio: arpeggio || null, key_sig: keySig || {} })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || '音階の修正に失敗しました');
@@ -139,6 +184,44 @@ async function deleteProfile(profileId) {
 async function getHistory(profileId) {
   const res = await apiFetch(`/api/history?profile_id=${profileId}`);
   return await res.json();
+}
+
+async function getAllHistory(profileId, limit = 500, offset = 0) {
+  const params = new URLSearchParams({ limit, offset });
+  if (profileId) params.set('profile_id', profileId);
+  const res = await apiFetch(`/api/all-history?${params}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '記録の取得に失敗しました');
+  return data;
+}
+
+async function createHistoryForProfile(fields) {
+  const res = await apiFetch('/api/all-history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '記録の作成に失敗しました');
+  return data;
+}
+
+async function updateHistoryRecord(historyId, fields) {
+  const res = await apiFetch(`/api/history/${historyId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '記録の更新に失敗しました');
+  return data;
+}
+
+async function deleteHistoryRecord(historyId) {
+  const res = await apiFetch(`/api/history/${historyId}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '記録の削除に失敗しました');
+  return data;
 }
 
 async function saveHistory(data) {

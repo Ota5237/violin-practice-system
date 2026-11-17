@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>研究データ閲覧</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:       #0f0f1a;
+  --bg2:      #1a1a2e;
+  --bg3:      #16213e;
+  --surface:  #1e2a45;
+  --border:   #2a3a5c;
+  --accent:   #4f8ef7;
+  --accent2:  #7c3aed;
+  --text:     #e2e8f0;
+  --muted:    #8892a4;
+  --good:     #34d399;
+  --warn:     #fbbf24;
+  --bad:      #f87171;
+  --radius:   8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Noto Sans JP', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+
+/* ── ヘッダー ── */
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+header h1 { font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: .04em; }
+.header-right { display: flex; align-items: center; gap: 16px; }
+.header-right a { color: var(--muted); font-size: .85rem; text-decoration: none; }
+.header-right a:hover { color: var(--text); }
+.btn-link { background: none; border: none; color: var(--muted); font-size: .85rem; cursor: pointer; padding: 0; }
+.btn-link:hover { color: var(--text); }
+#menuToggle { display: none; background: none; border: 1px solid var(--border); color: var(--text); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: .85rem; }
+
+/* ── レイアウト ── */
+.layout { display: flex; flex: 1; overflow: hidden; }
+
+/* ── サイドバー ── */
+aside { width: 160px; min-width: 120px; background: var(--bg3); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; }
+.sidebar-title { padding: 12px 14px 6px; font-size: .72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+.subject-list { list-style: none; }
+.subject-list li { padding: 9px 14px; cursor: pointer; font-size: .85rem; border-left: 3px solid transparent; transition: background .15s; }
+.subject-group-header { padding: 8px 14px 4px !important; font-size: .68rem !important; font-weight: 700; color: var(--accent) !important; text-transform: uppercase; letter-spacing: .06em; cursor: default !important; border-left: none !important; background: none !important; }
+.subject-list li:hover { background: var(--surface); }
+.subject-group-header:hover { background: none !important; }
+.subject-list li.active { background: var(--surface); border-left-color: var(--accent); color: var(--accent); font-weight: 500; }
+
+/* ── メイン ── */
+main { flex: 1; overflow-y: auto; padding: 20px; }
+.card-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 0 4px; border-top: 1px solid var(--border); margin-top: 8px; }
+.card-filter-row .group-filter-bar { padding: 0; margin: 0; }
+.scale-dropdown { position: relative; }
+.scale-dropdown-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 999px; font-size: .78rem; cursor: pointer; white-space: nowrap; transition: all .15s; display: inline-flex; align-items: center; gap: 4px; line-height: 1.4; }
+.scale-dropdown-btn:hover, .scale-dropdown-btn.open { border-color: var(--accent); color: var(--accent); }
+.scale-dropdown-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; z-index: 100; min-width: 120px; }
+.scale-dropdown-menu.open { display: block; }
+.scale-dropdown-menu button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--muted); padding: 8px 14px; font-size: .82rem; cursor: pointer; transition: background .12s; }
+.scale-dropdown-menu button:hover { background: var(--surface); color: var(--text); }
+.scale-dropdown-menu button.active { color: var(--accent); font-weight: 600; }
+
+/* ── タブ ── */
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font-size: .9rem; font-family: inherit; padding: 8px 16px; margin-bottom: -1px; transition: color .15s; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── カード ── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 18px; }
+.card h2 { font-size: .95rem; font-weight: 700; margin-bottom: 14px; color: var(--text); }
+.card h3 { font-size: .85rem; font-weight: 600; margin-bottom: 10px; color: var(--muted); }
+.chart-wrap { position: relative; }
+.chart-wrap canvas { max-height: 300px; }
+
+/* ── サマリーグリッド ── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.stat-card { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; text-align: center; }
+.stat-num  { font-size: 2rem; font-weight: 700; line-height: 1; }
+.stat-label{ font-size: .75rem; color: var(--muted); margin-top: 4px; }
+.good { color: var(--good); }
+.warn { color: var(--warn); }
+.bad  { color: var(--bad); }
+.stat-group-label { grid-column: 1 / -1; font-size: .82rem; font-weight: 600; color: var(--accent); padding: 6px 2px 2px; border-bottom: 1px solid var(--border); }
+.stat-group-label:first-child { padding-top: 0; }
+
+/* ── テーブル ── */
+.data-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.data-table th { text-align: left; padding: 7px 10px; background: var(--bg3); color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+.data-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.data-table tr:last-child td { border-bottom: none; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: .72rem; font-weight: 600; }
+.badge-baseline { background: #2a3f6f; color: #93c5fd; }
+.badge-test     { background: #2a4a3a; color: #6ee7b7; }
+.badge-practice { background: #3a2a4a; color: #c4b5fd; }
+.badge-free     { background: #3a3a1a; color: #fde68a; }
+.card-header-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.card-header-row h2 { margin-bottom: 0; }
+.filter-btns { display: flex; gap: 6px; }
+.group-filter-bar { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0 10px; }
+.group-filter-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 999px; font-size: .78rem; cursor: pointer; transition: all .15s; }
+.group-filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+.group-filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.date-header td { background: var(--bg); color: var(--muted); font-size: .78rem; font-weight: 600; padding: 6px 10px 3px; letter-spacing: .05em; border-bottom: 1px solid var(--border); }
+.date-sep td    { height: 10px; background: transparent; border: none; padding: 0; }
+.scale-row { cursor: pointer; }
+.scale-row:hover td { background: rgba(255,255,255,.04); }
+.scale-summary-cell { padding: 9px 12px; }
+.expand-icon { display: inline-block; width: 16px; font-size: .68rem; color: var(--muted); }
+.summary-flow { margin-left: 10px; font-size: .82rem; color: var(--muted); flex-wrap: wrap; }
+.lbl-pre, .lbl-prac, .lbl-post { font-size: .72rem; font-weight: 600; padding: 1px 5px; border-radius: 3px; margin: 0 4px 0 8px; }
+.lbl-pre  { background: rgba(79,142,247,.2);  color: #93c5fd; }
+.lbl-prac { background: rgba(167,139,250,.2); color: #c4b5fd; }
+.lbl-post { background: rgba(52,211,153,.2);  color: #6ee7b7; }
+.arrow { margin: 0 4px; color: var(--border); }
+.acc-pre  { color: #93c5fd; font-weight: 600; }
+.acc-post { color: #6ee7b7; font-weight: 600; }
+.prac-summary { display: inline; }
+.prac-item { display: inline-block; margin: 1px 6px 1px 0; }
+.detail-row td { background: rgba(255,255,255,.02); font-size: .82rem; color: var(--muted); padding: 5px 12px; }
+.detail-row:last-child td { border-bottom: 1px solid var(--border); }
+.line-legend { text-align: right; font-size: .82rem; color: var(--text); margin: 6px 6px 0; display: flex; justify-content: flex-end; gap: 12px; }
+.ll-solid { display: inline-flex; align-items: center; gap: 5px; }
+.ll-solid::before { content: ''; display: inline-block; width: 20px; height: 2px; background: currentColor; }
+.ll-dash  { display: inline-flex; align-items: center; gap: 5px; opacity: .8; }
+.ll-dash::before  { content: ''; display: inline-block; width: 20px; height: 2px; background: repeating-linear-gradient(to right, currentColor 0, currentColor 5px, transparent 5px, transparent 9px); }
+
+/* ── 被験者情報 ── */
+.subject-info { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.info-chip { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; font-size: .82rem; }
+.info-chip span { color: var(--muted); font-size: .75rem; display: block; }
+
+/* ── ローディング ── */
+.loading { color: var(--muted); text-align: center; padding: 32px; font-size: .9rem; }
+.empty   { color: var(--muted); text-align: center; padding: 24px; font-size: .85rem; }
+
+@media (max-width: 640px) {
+  aside { display: none; }
+  aside.open { display: block; width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+  #menuToggle { display: block; }
+  .layout { flex-direction: column; }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎻 研究データ閲覧</h1>
+  <div class="header-right">
+    <span id="viewerUserName" style="font-size:.85rem;color:var(--muted)"></span>
+    <button id="menuToggle" onclick="toggleSidebar()">☰ 被験者</button>
+    <a href="/" id="backToAppLink" style="display:none">← アプリに戻る</a>
+    <button onclick="doLogout()" class="btn-link">ログアウト</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside id="sidebar">
+    <div class="sidebar-title">被験者一覧</div>
+    <ul class="subject-list" id="subjectList"><li class="loading">読み込み中…</li></ul>
+  </aside>
+
+  <main>
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('group')">グループ全体</button>
+      <button class="tab-btn" id="tabIndividual" onclick="switchTab('individual')">個人詳細</button>
+      <button class="tab-btn" onclick="switchTab('notes')">音符分析</button>
+    </div>
+
+    <!-- グループ全体 -->
+    <div class="tab-panel active" id="tab-group">
+      <div class="stat-grid" id="groupStats"><div class="stat-card loading">読み込み中…</div></div>
+      <div class="card">
+        <h2>被験者別 事前→事後 正答率</h2>
+        <div class="chart-wrap"><canvas id="chartSubjectCompare"></canvas></div>
+        <div class="card-filter-row">
+          <div class="group-filter-bar">
+            <button class="group-filter-btn active" data-filter="all"    onclick="setGroupFilter('all')">全体</button>
+            <button class="group-filter-btn"        data-filter="free"   onclick="setGroupFilter('free')">アプリ練習あり</button>
+            <button class="group-filter-btn"        data-filter="nofree" onclick="setGroupFilter('nofree')">アプリ練習なし</button>
+          </div>
+          <div class="scale-dropdown" id="scaleDropdown1">
+            <button class="scale-dropdown-btn" onclick="toggleScaleDropdown('scaleDropdown1')">音階：全音階 ▾</button>
+            <div class="scale-dropdown-menu" id="scaleDropdownMenu1"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header-row">
+          <h2>被験者別 正答率推移（事前・事後）</h2>
+          <div class="filter-btns">
+            <button class="group-filter-btn active" data-gtl="both"     onclick="setGroupTimelineFilter('both')">両方</button>
+            <button class="group-filter-btn"        data-gtl="baseline" onclick="setGroupTimelineFilter('baseline')">事前</button>
+            <button class="group-filter-btn"        data-gtl="test"     onclick="setGroupTimelineFilter('test')">事後</button>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="chartGroupTimeline"></canvas></div>
+        <div class="card-filter-row">
+          <div class="group-filter-bar">
+            <button class="group-filter-btn active" data-filter2="all"    onclick="setGroupFilter('all')">全体</button>
+            <button class="group-filter-btn"        data-filter2="free"   onclick="setGroupFilter('free')">アプリ練習あり</button>
+            <button class="group-filter-btn"        data-filter2="nofree" onclick="setGroupFilter('nofree')">アプリ練習なし</button>
+          </div>
+          <div class="scale-dropdown" id="scaleDropdown2">
+            <button class="scale-dropdown-btn" onclick="toggleScaleDropdown('scaleDropdown2')">音階：全音階 ▾</button>
+            <div class="scale-dropdown-menu" id="scaleDropdownMenu2"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>音階別 グループ平均正答率</h2>
+        <div class="chart-wrap"><canvas id="chartScaleCompare"></canvas></div>
+      </div>
+    </div>
+
+    <!-- 個人詳細 -->
+    <div class="tab-panel" id="tab-individual">
+      <div id="individualContent"><p class="empty">左の被験者一覧から選択してください</p></div>
+    </div>
+
+    <!-- 音符分析 -->
+    <div class="tab-panel" id="tab-notes">
+      <div class="card">
+        <h2>全被験者合算：苦手音符ランキング（事前・事後）</h2>
+        <div class="chart-wrap"><canvas id="chartGroupNotes"></canvas></div>
+      </div>
+      <div class="card" id="indivNotesCard" style="display:none">
+        <h2 id="indivNotesTitle">個人苦手音符</h2>
+        <div class="chart-wrap"><canvas id="chartIndivNotes"></canvas></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ─── グローバル状態 ─────────────────────────────────────────────────
+let subjects = [];
+let selectedSubject = null;
+let groupStats = null;
+const charts = {};
+
+// ─── ユーティリティ ──────────────────────────────────────────────────
+async function api(url) {
+  const r = await fetch(url);
+  if (r.status === 401 || r.status === 403) { location.href = '/'; return null; }
+  if (!r.ok) return null;
+  return r.json();
+}
+
+function colorFor(i, alpha=1) {
+  const palette = [
+    `rgba(79,142,247,${alpha})`,  `rgba(124,58,237,${alpha})`,
+    `rgba(52,211,153,${alpha})`,  `rgba(251,191,36,${alpha})`,
+    `rgba(248,113,113,${alpha})`, `rgba(45,212,191,${alpha})`,
+    `rgba(249,168,212,${alpha})`, `rgba(167,243,208,${alpha})`,
+  ];
+  return palette[i % palette.length];
+}
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+const CHART_DEFAULTS = {
+  plugins: { legend: { labels: { color: '#8892a4', font: { family: 'Noto Sans JP' }, boxWidth: 12, boxHeight: 12 } } },
+  scales: {
+    x: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } },
+    y: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' }, min: 0, max: 100 }
+  }
+};
+
+function tabDefaults() { return JSON.parse(JSON.stringify(CHART_DEFAULTS)); }
+
+// ─── タブ切り替え ────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b,i) => {
+    const names = ['group','individual','notes'];
+    b.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'notes') loadNoteTab();
+}
+
+async function doLogout() {
+  await fetch('/api/logout', { method: 'POST' });
+  location.href = '/';
+}
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+
+// ─── 被験者一覧 ──────────────────────────────────────────────────────
+async function loadSubjects() {
+  subjects = await api('/api/viewer/subjects') || [];
+  const ul = document.getElementById('subjectList');
+  if (!subjects.length) { ul.innerHTML = '<li class="empty">被験者なし</li>'; return; }
+  const withFree    = subjects.filter(s => s.with_practice === 'yes');
+  const withoutFree = subjects.filter(s => s.with_practice !== 'yes');
+  const makeItem = s => `<li data-id="${s.id}" onclick="selectSubject(${s.id})">${s.name}</li>`;
+  const makeGroup = (label, list) => list.length
+    ? `<li class="subject-group-header">${label}</li>` + list.map(makeItem).join('')
+    : '';
+  ul.innerHTML = makeGroup('アプリ練習あり', withFree) + makeGroup('アプリ練習なし', withoutFree);
+}
+
+function selectSubject(id) {
+  selectedSubject = subjects.find(s => s.id === id) || null;
+  document.querySelectorAll('.subject-list li').forEach(li => {
+    li.classList.toggle('active', parseInt(li.dataset.id) === id);
+  });
+  if (selectedSubject) {
+    document.getElementById('tabIndividual').textContent = `個人詳細：${selectedSubject.name}`;
+    loadIndividual(id);
+    switchTab('individual');
+    // 音符タブが開いていれば更新
+    if (document.getElementById('tab-notes').classList.contains('active')) loadNoteTab();
+  }
+}
+
+function toggleDetail(id) {
+  const body = document.getElementById(id);
+  const icon = document.getElementById('icon-' + id);
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : '';
+  if (icon) icon.textContent = open ? '▶' : '▼';
+}
+
+function setGroupFilter(f) {
+  groupFilter = f;
+  renderGroupStats();
+}
+
+function applyGroupTimelineFilter() {
+  const chart = charts['groupTimeline'];
+  if (!chart) return;
+  chart.data.datasets.forEach(ds => {
+    const isTest = ds.label.endsWith('事後');
+    if (groupTimelineFilter === 'both')     ds.hidden = false;
+    else if (groupTimelineFilter === 'test')     ds.hidden = !isTest;
+    else if (groupTimelineFilter === 'baseline') ds.hidden = isTest;
+  });
+  chart.update();
+}
+
+function setGroupTimelineFilter(mode) {
+  groupTimelineFilter = mode;
+  document.querySelectorAll('[data-gtl]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.gtl === mode);
+  });
+  applyGroupTimelineFilter();
+}
+
+// ─── グループ全体 ────────────────────────────────────────────────────
+let groupFilter = 'all'; // 'all' | 'free' | 'nofree'
+let groupTimelineFilter = 'both'; // 'both' | 'test' | 'baseline'
+let scaleFilter = ''; // '' = 全音階, or scale name
+let groupTimeline = null;
+
+async function loadGroupStats() {
+  const qs = scaleFilter ? `?scale=${encodeURIComponent(scaleFilter)}` : '';
+  [groupStats, groupTimeline] = await Promise.all([
+    api('/api/viewer/group-stats' + qs),
+    api('/api/viewer/group-timeline' + qs),
+  ]);
+  if (!groupStats) return;
+  renderGroupStats();
+}
+
+
+function renderScaleFilterBtns(byScale) {
+  renderScaleDropdowns(byScale);
+}
+
+function toggleScaleDropdown(id) {
+  const dropdown = document.getElementById(id);
+  if (!dropdown) return;
+  const btn = dropdown.querySelector('.scale-dropdown-btn');
+  const menu = dropdown.querySelector('.scale-dropdown-menu');
+  const isOpen = menu.classList.toggle('open');
+  btn.classList.toggle('open', isOpen);
+  if (isOpen) {
+    // 他のドロップダウンを閉じる
+    document.querySelectorAll('.scale-dropdown').forEach(d => {
+      if (d.id !== id) {
+        d.querySelector('.scale-dropdown-menu').classList.remove('open');
+        d.querySelector('.scale-dropdown-btn').classList.remove('open');
+      }
+    });
+  }
+}
+
+function renderScaleDropdowns(byScale) {
+  const scales = ['', ...byScale.map(s => s.scale)];
+  const labels = {'': '全音階'};
+  scales.forEach(s => { if (s) labels[s] = s; });
+  ['scaleDropdownMenu1','scaleDropdownMenu2'].forEach(menuId => {
+    const menu = document.getElementById(menuId);
+    if (!menu) return;
+    menu.innerHTML = scales.map(s =>
+      `<button class="${scaleFilter === s ? 'active' : ''}" onclick="pickScale('${s}')">${labels[s]}</button>`
+    ).join('');
+  });
+  // ボタンのラベル更新
+  ['scaleDropdown1','scaleDropdown2'].forEach(id => {
+    const btn = document.getElementById(id)?.querySelector('.scale-dropdown-btn');
+    if (btn) btn.firstChild.textContent = `音階：${scaleFilter || '全音階'} `;
+  });
+}
+
+function pickScale(scale) {
+  scaleFilter = scale;
+  // ドロップダウンを閉じる
+  document.querySelectorAll('.scale-dropdown-menu').forEach(m => m.classList.remove('open'));
+  document.querySelectorAll('.scale-dropdown-btn').forEach(b => b.classList.remove('open'));
+  loadGroupStats();
+}
+
+// 外クリックで閉じる
+document.addEventListener('click', e => {
+  if (!e.target.closest('.scale-dropdown')) {
+    document.querySelectorAll('.scale-dropdown-menu').forEach(m => m.classList.remove('open'));
+    document.querySelectorAll('.scale-dropdown-btn').forEach(b => b.classList.remove('open'));
+  }
+});
+
+function syncGroupFilterBtns() {
+  document.querySelectorAll('[data-filter],[data-filter2]').forEach(btn => {
+    const f = btn.dataset.filter ?? btn.dataset.filter2;
+    btn.classList.toggle('active', f === groupFilter);
+  });
+}
+
+function renderGroupStats() {
+  if (!groupStats) return;
+  const { subjects: allSubs, by_scale } = groupStats;
+
+  // 音階フィルターボタン更新
+  renderScaleFilterBtns(by_scale);
+
+  // グループ別サマリーカード生成
+  function groupCards(subs) {
+    const avgBase = subs.length ? Math.round(subs.reduce((a,s)=>a+s.baseline_avg,0)/subs.length*10)/10 : 0;
+    const avgTest = subs.length ? Math.round(subs.reduce((a,s)=>a+s.test_avg,0)/subs.length*10)/10 : 0;
+    const imp = subs.length ? Math.round((avgTest - avgBase)*10)/10 : 0;
+    const impColor = imp >= 3 ? 'good' : imp >= 0 ? 'warn' : 'bad';
+    return `
+      <div class="stat-card"><div class="stat-num ${impColor}">${imp > 0 ? '+' : ''}${imp}%</div><div class="stat-label">平均改善量</div></div>
+      <div class="stat-card"><div class="stat-num">${avgBase}%</div><div class="stat-label">事前平均正答率</div></div>
+      <div class="stat-card"><div class="stat-num">${avgTest}%</div><div class="stat-label">事後平均正答率</div></div>
+      <div class="stat-card"><div class="stat-num">${subs.length}</div><div class="stat-label">被験者数</div></div>
+    `;
+  }
+
+  const withSubs = allSubs.filter(s => s.with_practice);
+  const noSubs   = allSubs.filter(s => !s.with_practice);
+  document.getElementById('groupStats').innerHTML =
+    `<div class="stat-group-label">アプリ練習あり</div>` + groupCards(withSubs) +
+    `<div class="stat-group-label">アプリ練習なし</div>` + groupCards(noSubs);
+
+  // チャートフィルター用（グラフ絞り込みに使用）
+  const subs = allSubs.filter(s =>
+    groupFilter === 'all'   ? true :
+    groupFilter === 'free'  ? s.with_practice :
+                              !s.with_practice
+  );
+
+  // フィルターボタン更新（data-filter / data-filter2 両方）
+  syncGroupFilterBtns();
+
+  // 被験者比較 横棒グラフ
+  destroyChart('subjectCompare');
+  const ctxSC = document.getElementById('chartSubjectCompare').getContext('2d');
+  const cfg = tabDefaults();
+  cfg.indexAxis = 'y';
+  cfg.scales.x = { min: 0, max: 100, ticks: { color: '#8892a4', callback: v => v + '%' }, grid: { color: '#2a3a5c' } };
+  cfg.scales.y = { ticks: { color: '#8892a4' }, grid: { color: 'transparent' } };
+  charts['subjectCompare'] = new Chart(ctxSC, {
+    type: 'bar',
+    data: {
+      labels: subs.map(s => s.name),
+      datasets: [
+        { label: '事前', data: subs.map(s => s.baseline_avg), backgroundColor: 'rgba(79,142,247,0.7)', borderColor: 'rgba(79,142,247,1)', borderWidth: 1 },
+        { label: '事後', data: subs.map(s => s.test_avg),     backgroundColor: 'rgba(52,211,153,0.7)', borderColor: 'rgba(52,211,153,1)', borderWidth: 1 },
+      ]
+    },
+    options: { ...cfg, responsive: true }
+  });
+
+  // 被験者別 推移 折れ線グラフ
+  destroyChart('groupTimeline');
+  if (groupTimeline) {
+    const filteredTl = groupTimeline.filter(s =>
+      groupFilter === 'all'   ? true :
+      groupFilter === 'free'  ? s.with_practice :
+                                !s.with_practice
+    );
+    const maxDay = filteredTl.reduce((m, s) => Math.max(m, s.days.length), 0);
+    const dayLabelsGT = Array.from({length: maxDay}, (_, i) => `Day${i+1}`);
+    const datasetsGT = [];
+    filteredTl.forEach((s, si) => {
+      const c = colorFor(si);
+      // 事前（破線）
+      datasetsGT.push({
+        label: `${s.name} 事前`,
+        data: dayLabelsGT.map((_, i) => { const d = s.days.find(x=>x.day===i+1); return d ? d.baseline : null; }),
+        borderColor: c, backgroundColor: c.replace(/[\d.]+\)$/,'0.1)'),
+        borderDash: [6,3], borderWidth: 2, pointRadius: 4, spanGaps: true, tension: 0.2,
+      });
+      // 事後（実線）
+      datasetsGT.push({
+        label: `${s.name} 事後`,
+        data: dayLabelsGT.map((_, i) => { const d = s.days.find(x=>x.day===i+1); return d ? d.test : null; }),
+        borderColor: c, backgroundColor: c.replace(/[\d.]+\)$/,'0.1)'),
+        borderDash: [], borderWidth: 2, pointRadius: 4, spanGaps: true, tension: 0.2,
+      });
+    });
+    const ctxGT = document.getElementById('chartGroupTimeline').getContext('2d');
+    const cfgGT = tabDefaults();
+    const allGTVals = datasetsGT.flatMap(d => d.data.filter(v => v !== null));
+    const gtMin = allGTVals.length ? Math.max(0,  Math.floor((Math.min(...allGTVals) - 5) / 5) * 5) : 0;
+    const gtMax = allGTVals.length ? Math.min(100, Math.ceil ((Math.max(...allGTVals) + 5) / 5) * 5) : 100;
+    cfgGT.scales.x = { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } };
+    cfgGT.scales.y = { min: gtMin, max: gtMax, ticks: { color: '#8892a4', callback: v => v+'%' }, grid: { color: '#2a3a5c' } };
+    cfgGT.plugins = cfgGT.plugins || {};
+    cfgGT.plugins.legend = {
+      labels: {
+        boxWidth: 12, boxHeight: 12,
+        generateLabels: chart => {
+          const all = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+          const visTest     = all.filter(i => i.text.endsWith('事後') && !chart.data.datasets[i.datasetIndex]?.hidden);
+          const visBaseline = all.filter(i => i.text.endsWith('事前') && !chart.data.datasets[i.datasetIndex]?.hidden);
+          const toShow = visTest.length > 0 ? visTest : visBaseline;
+          return toShow.map(i => ({ ...i, text: i.text.replace(/ (事後|事前)$/, '') }));
+        }
+      }
+    };
+    charts['groupTimeline'] = new Chart(ctxGT, {
+      type: 'line',
+      data: { labels: dayLabelsGT, datasets: datasetsGT },
+      options: { ...cfgGT, responsive: true }
+    });
+    // フィルター状態を再適用
+    applyGroupTimelineFilter();
+    const wrapGT = ctxGT.canvas.closest('.chart-wrap');
+    if (!wrapGT.querySelector('.line-legend')) {
+      const note = document.createElement('p');
+      note.className = 'line-legend';
+      note.innerHTML = '<span class="ll-dash">事前</span><span class="ll-solid">事後</span>';
+      wrapGT.appendChild(note);
+    }
+  }
+
+  // 音階別グラフ
+  destroyChart('scaleCompare');
+  const ctxSc2 = document.getElementById('chartScaleCompare').getContext('2d');
+  const cfg2 = tabDefaults();
+  charts['scaleCompare'] = new Chart(ctxSc2, {
+    type: 'bar',
+    data: {
+      labels: by_scale.map(r => r.scale),
+      datasets: [
+        { label: '事前', data: by_scale.map(r => r.baseline_avg), backgroundColor: 'rgba(79,142,247,0.6)', borderWidth: 1 },
+        { label: '事後', data: by_scale.map(r => r.test_avg),     backgroundColor: 'rgba(52,211,153,0.6)', borderWidth: 1 },
+      ]
+    },
+    options: { ...cfg2, responsive: true }
+  });
+}
+
+// ─── 個人詳細 ────────────────────────────────────────────────────────
+async function loadIndividual(pid) {
+  const container = document.getElementById('individualContent');
+  container.innerHTML = '<p class="loading">読み込み中…</p>';
+  const timeline = await api(`/api/viewer/subject/${pid}/timeline`);
+  if (!timeline) { container.innerHTML = '<p class="empty">データなし</p>'; return; }
+
+  const s = selectedSubject;
+  const p1 = (s.phase1_scales || []).join(' / ');
+  const p2 = (s.phase2_scales || []).join(' / ');
+
+  container.innerHTML = `
+    <div class="subject-info">
+      <div class="info-chip"><span>被験者</span>${s.name}</div>
+      <div class="info-chip"><span>フェーズ1 音階</span>${p1 || '—'}</div>
+      <div class="info-chip"><span>フェーズ2 音階</span>${p2 || '—'}</div>
+      <div class="info-chip"><span>総記録数</span>${timeline.length}件</div>
+    </div>
+    <div class="card">
+      <div class="card-header-row">
+        <h2>事前・事後 正答率推移</h2>
+        <div class="filter-btns">
+          <button class="group-filter-btn active" data-tl="both"     onclick="setTimelineFilter('both')">両方</button>
+          <button class="group-filter-btn"        data-tl="baseline" onclick="setTimelineFilter('baseline')">事前</button>
+          <button class="group-filter-btn"        data-tl="test"     onclick="setTimelineFilter('test')">事後</button>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chartTimeline"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>練習セッション一覧</h2>
+      <div style="overflow-x:auto">${buildSessionTable(timeline)}</div>
+    </div>
+  `;
+
+  // 推移グラフ: baseline/test のみ対象
+  const scalePhaseMap = {};
+  timeline.forEach(r => {
+    if (r.phase !== 'baseline' && r.phase !== 'test') return;
+    const key = `${r.scale}__${r.phase}`;
+    if (!scalePhaseMap[key]) scalePhaseMap[key] = { scale: r.scale, phase: r.phase, points: [] };
+    scalePhaseMap[key].points.push({ x: r.practiced_at.substring(0,10), y: r.accuracy });
+  });
+
+  const allDates = [...new Set(timeline.filter(r=>r.phase==='baseline'||r.phase==='test').map(r=>r.practiced_at.substring(0,10)))].sort();
+  const dayLabels = allDates.map((d, i) => `Day${i + 1}`);
+  const datasets = [];
+  let ci = 0;
+  for (const [key, val] of Object.entries(scalePhaseMap)) {
+    const isTest = val.phase === 'test';
+    const baseColor = colorFor(Math.floor(ci / 2));
+    const data = allDates.map(d => {
+      const pts = val.points.filter(p => p.x === d);
+      return pts.length ? Math.round(pts.reduce((a,p)=>a+p.y,0)/pts.length*10)/10 : null;
+    });
+    datasets.push({
+      label: `${val.scale} ${isTest ? '事後' : '事前'}`,
+      data,
+      borderColor: baseColor,
+      backgroundColor: baseColor.replace(/[\d.]+\)$/, '0.1)'),
+      borderDash: isTest ? [] : [6,3],
+      borderWidth: 2,
+      pointRadius: 4,
+      spanGaps: true,
+      tension: 0.2,
+    });
+    ci++;
+  }
+
+  destroyChart('timeline');
+  const ctx = document.getElementById('chartTimeline').getContext('2d');
+  const cfgT = tabDefaults();
+  const allVals = datasets.flatMap(d => d.data.filter(v => v !== null));
+  const yMin = Math.max(0,  Math.floor((Math.min(...allVals) - 5) / 5) * 5);
+  const yMax = Math.min(100, Math.ceil ((Math.max(...allVals) + 5) / 5) * 5);
+  cfgT.scales.x = { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } };
+  cfgT.scales.y = { min: yMin, max: yMax, ticks: { color: '#8892a4', callback: v => v+'%' }, grid: { color: '#2a3a5c' } };
+  cfgT.plugins = cfgT.plugins || {};
+  cfgT.plugins.legend = {
+    labels: {
+      boxWidth: 12, boxHeight: 12,
+      generateLabels: chart => {
+        const all = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+        const visTest     = all.filter(i => i.text.endsWith('事後') && !chart.data.datasets[i.datasetIndex]?.hidden);
+        const visBaseline = all.filter(i => i.text.endsWith('事前') && !chart.data.datasets[i.datasetIndex]?.hidden);
+        const toShow = visTest.length > 0 ? visTest : visBaseline;
+        return toShow.map(i => ({ ...i, text: i.text.replace(/ (事後|事前)$/, '') }));
+      }
+    }
+  };
+  cfgT.plugins.tooltip = {
+    callbacks: {
+      title: items => `${dayLabels[items[0].dataIndex]}（${allDates[items[0].dataIndex]}）`
+    }
+  };
+  charts['timeline'] = new Chart(ctx, {
+    type: 'line',
+    data: { labels: dayLabels, datasets },
+    options: { ...cfgT, responsive: true }
+  });
+  // 線種説明
+  const wrap = ctx.canvas.closest('.chart-wrap');
+  const existing = wrap.querySelector('.line-legend');
+  if (!existing) {
+    const note = document.createElement('p');
+    note.className = 'line-legend';
+    note.innerHTML = '<span class="ll-dash">事前</span><span class="ll-solid">事後</span>';
+    wrap.appendChild(note);
+  }
+}
+
+function setTimelineFilter(mode) {
+  document.querySelectorAll('[data-tl]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tl === mode);
+  });
+  const chart = charts['timeline'];
+  if (!chart) return;
+  chart.data.datasets.forEach(ds => {
+    const isTest = ds.label.endsWith('事後');
+    if (mode === 'both')     ds.hidden = false;
+    else if (mode === 'test')     ds.hidden = !isTest;
+    else if (mode === 'baseline') ds.hidden = isTest;
+  });
+  chart.update();
+}
+
+function buildSessionTable(timeline) {
+  if (!timeline.length) return '<p class="empty">なし</p>';
+  const dirLabel = d => ({up:'上行',down:'下行',updown:'上下','上行':'上行','下行':'下行','上下':'上下'}[d]||d||'—');
+  const modeLabel = m => m==='step'?'1音ずつ':m==='tempo'?'テンポ':m||'—';
+  const accStr = r => r.notes_total > 0 ? `${r.accuracy}%` : '—';
+
+  // 日付→音階の順でグループ化
+  const dateMap = {};
+  const dateOrder = [];
+  timeline.forEach(r => {
+    const date = r.practiced_at.substring(0, 10);
+    if (!dateMap[date]) { dateMap[date] = {}; dateOrder.push(date); }
+    if (!dateMap[date][r.scale]) dateMap[date][r.scale] = {baseline:[], practice:[], test:[]};
+    const phase = ['baseline','test'].includes(r.phase) ? r.phase : 'practice';
+    dateMap[date][r.scale][phase].push(r);
+  });
+
+  let rows = '';
+  let detailId = 0;
+  dateOrder.forEach((date, di) => {
+    if (di > 0) rows += '<tr class="date-sep"><td colspan="4"></td></tr>';
+    rows += `<tr class="date-header"><td colspan="4">${date}</td></tr>`;
+    const scaleMap = dateMap[date];
+    Object.keys(scaleMap).forEach(scale => {
+      const { baseline, practice, test } = scaleMap[scale];
+      const did = 'detail-' + (detailId++);
+
+      // サマリー行（閉じた状態は音階名のみ）
+      rows += `<tr class="scale-row" onclick="toggleDetail('${did}')">
+        <td colspan="2" class="scale-summary-cell">
+          <span class="expand-icon" id="icon-${did}">▼</span>
+          <strong>${scale}</strong>
+        </td>
+      </tr>`;
+
+      // 詳細行（非表示・縦向きリスト）
+      const phaseLabel = {baseline:'事前',test:'事後',practice:'練習',free:'自由'};
+      const allRecords = [...baseline, ...practice, ...test];
+      const detailRows = allRecords.map(r => {
+        const badge = `<span class="badge badge-${r.phase}">${phaseLabel[r.phase]||r.phase}</span>`;
+        const menu = `${dirLabel(r.direction)}　${modeLabel(r.mode)}${r.bpm ? ' BPM'+r.bpm : ''}`;
+        const detail = r.notes_total > 0 ? `${r.accuracy}%　(${r.notes_correct}/${r.notes_total}音)` : '—';
+        return `<tr class="detail-row">
+          <td style="padding-left:28px">${badge}</td>
+          <td colspan="1">${menu}</td>
+          <td>${detail}</td>
+        </tr>`;
+      }).join('');
+      rows += `<tbody id="${did}" class="detail-body">${detailRows}</tbody>`;
+    });
+  });
+  return `<table class="data-table session-grouped">
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ─── 音符分析 ────────────────────────────────────────────────────────
+let noteTabLoaded = false;
+async function loadNoteTab() {
+  // グループ音符ヒートマップ（初回のみ）
+  if (!noteTabLoaded) {
+    noteTabLoaded = true;
+    const data = await api('/api/viewer/note-heatmap');
+    if (data && data.length) {
+      destroyChart('groupNotes');
+      const ctx = document.getElementById('chartGroupNotes').getContext('2d');
+      const cfgN = {
+        plugins: { legend: { display: false } },
+        indexAxis: 'y',
+        scales: {
+          x: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' }, min: 0, max: 100,
+               title: { display: true, text: '正解率 (%)', color: '#8892a4' } },
+          y: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } }
+        }
+      };
+      charts['groupNotes'] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: data.map(r => r.note),
+          datasets: [{ data: data.map(r => r.accuracy),
+            backgroundColor: data.map(r => r.accuracy < 60 ? 'rgba(248,113,113,0.7)' : r.accuracy < 80 ? 'rgba(251,191,36,0.7)' : 'rgba(52,211,153,0.7)'),
+            borderWidth: 0 }]
+        },
+        options: { ...cfgN, responsive: true }
+      });
+    }
+  }
+
+  // 個人音符グラフ
+  if (selectedSubject) {
+    const card = document.getElementById('indivNotesCard');
+    card.style.display = '';
+    document.getElementById('indivNotesTitle').textContent = `${selectedSubject.name} の苦手音符`;
+    const data = await api(`/api/stats/notes?profile_id=${selectedSubject.id}`);
+    if (data && data.by_note && data.by_note.length) {
+      destroyChart('indivNotes');
+      const ctx2 = document.getElementById('chartIndivNotes').getContext('2d');
+      const notes = data.by_note.slice(0, 15);
+      const cfgN2 = {
+        plugins: { legend: { display: false } },
+        indexAxis: 'y',
+        scales: {
+          x: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' }, min: 0, max: 100 },
+          y: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } }
+        }
+      };
+      charts['indivNotes'] = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: notes.map(n => n.note),
+          datasets: [{ data: notes.map(n => n.accuracy),
+            backgroundColor: notes.map(n => n.accuracy < 60 ? 'rgba(248,113,113,0.7)' : n.accuracy < 80 ? 'rgba(251,191,36,0.7)' : 'rgba(52,211,153,0.7)'),
+            borderWidth: 0 }]
+        },
+        options: { ...cfgN2, responsive: true }
+      });
+    } else {
+      document.getElementById('chartIndivNotes').closest('.card').querySelector('canvas').insertAdjacentHTML('afterend','<p class="empty">データなし</p>');
+    }
+  }
+}
+
+// ─── /api/stats/notes レスポンス形式を確認して対応 ────────────────────
+// 既存APIは { by_note: [...] } 形式で返す
+
+// ─── 初期化 ──────────────────────────────────────────────────────────
+(async () => {
+  // セッション情報取得してヘッダーに表示
+  try {
+    const me = await fetch('/api/me');
+    if (me.ok) {
+      const u = await me.json();
+      const nameEl = document.getElementById('viewerUserName');
+      if (nameEl) nameEl.textContent = u.name || '';
+      // admin/researcherはメインアプリへ戻るリンクを表示
+      if (u.role === 'admin' || u.role === 'researcher') {
+        const lnk = document.getElementById('backToAppLink');
+        if (lnk) lnk.style.display = '';
+      }
+    }
+  } catch {}
+  await Promise.all([loadSubjects(), loadGroupStats()]);
+})();
+</script>
+</body>
+</html>
