@@ -1021,10 +1021,10 @@ function updateFingerboard(entry) {
 // スマホなど #noteStaff の実際の横幅が460pxより狭い場合、CSSのmax-width:100%で
 // 見た目は縮むが、子要素はpx固定のままだとズレる。そのため実際の表示幅から
 // 毎回スロット幅を計算し直す。
-const NOTE_VISIBLE  = 5;   // 常に表示する音符の数
-const STAFF_HEIGHT  = 140; // 五線譜エリアの高さ（CSSの.note-staffの高さと合わせる）
+const NOTE_VISIBLE  = 8;   // 常に表示する音符の数
+const STAFF_HEIGHT  = 200; // 五線譜エリアの高さ（CSSの.note-staffの高さと合わせる）
 const STAFF_STEP_PX = 6;   // 五線譜のダイアトニック1段（線と間1つ分の半分）あたりの縦px
-const STAFF_BOTTOM_Y = 95; // 五線の一番下の線（ミ4=E4）のy座標
+const STAFF_BOTTOM_Y = 140; // 五線の一番下の線（ミ4=E4）のy座標
 
 // このアプリの音名表記（ドイツ音名。C,D,E,F,G,A,H＋♯はs,♭はfの接尾辞）を、
 // 五線譜上の段数（ダイアトニック段。1段＝五線の線と間を合わせて7音分で1オクターブ）に変換する。
@@ -1064,7 +1064,7 @@ function ledgerOffsets(offset) {
 function noteTrackMetrics() {
   const width = document.getElementById('noteStaff').clientWidth || NOTE_VISIBLE * 92;
   const slot  = width / NOTE_VISIBLE;
-  return { slot, focus: width / 2, width };
+  return { slot, focus: slot * 2, width };
 }
 
 // 五線譜（固定の5本線）を、現在の表示幅いっぱいに描画する
@@ -1077,10 +1077,11 @@ function renderStaffLines(width) {
 // #noteStaff の中身を、五線譜のSVGに作り直す
 function renderNoteStaffContainer() {
   const container = document.getElementById('noteStaff');
+  const clefY = STAFF_BOTTOM_Y + 3;
   container.innerHTML = `
-    <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 140" preserveAspectRatio="none">
+    <svg class="staff-svg" id="staffSvg" viewBox="0 0 460 ${STAFF_HEIGHT}" preserveAspectRatio="none">
       <g id="staffLines"></g>
-      <text class="staff-clef" x="6" y="98">𝄞</text>
+      <text class="staff-clef" x="6" y="${clefY}">𝄞</text>
       <g class="note-track" id="noteTrack"></g>
     </svg>
     <div class="note-playhead"></div>`;
@@ -1100,20 +1101,64 @@ function renderNoteTrackStaff() {
   document.getElementById('staffSvg').setAttribute('viewBox', `0 0 ${width} ${STAFF_HEIGHT}`);
   renderStaffLines(width);
 
-  // 指番号用：全音符の最高ステップから固定 y を計算
-  const maxOff = practiceNotes.reduce((m, n) => Math.max(m, staffOffset(n.note)), 0);
-  const PRAC_FINGER_Y = Math.max(5, staffY(maxOff) - 12);
+  const STEM_LEN_T = STAFF_STEP_PX * 2 * 3.5; // 練習トラック用符幹の長さ（≒buildStaffSVGのSTEM_LEN相当）
 
   const keySig = window._currentStaffKeySig || {};
   const colorByString = !!(window._currentStaffWithPrac);
 
-  track.innerHTML = practiceNotes.map((entry, i) => {
+  // 半音ブラケット
+  const NOTE_BASE_SEMI_T = { C:0, D:2, E:4, F:5, G:7, A:9, H:11, B:11 };
+  const toSemi = k => {
+    const m = k?.match(/^([A-GHB])(s|f)?(\d+)$/i);
+    if (!m) return null;
+    let s = (NOTE_BASE_SEMI_T[m[1].toUpperCase()] ?? 0) + parseInt(m[3]) * 12;
+    if (m[2] === 's') s += 1;
+    if (m[2] === 'f') s -= 1;
+    return s;
+  };
+  let bracketSvg = '';
+  for (let bi = 0; bi < practiceNotes.length - 1; bi++) {
+    const s1 = toSemi(practiceNotes[bi].note);
+    const s2 = toSemi(practiceNotes[bi + 1].note);
+    if (s1 === null || s2 === null || Math.abs(s2 - s1) !== 1) continue;
+    const bx1 = bi * slot - 7 - 5;
+    const bx2 = (bi + 1) * slot + 7 + 5;
+    const by1 = Math.min(staffY(staffOffset(practiceNotes[bi].note)), staffY(staffOffset(practiceNotes[bi + 1].note))) - 5.5 - 5;
+    const by2 = Math.max(staffY(staffOffset(practiceNotes[bi].note)), staffY(staffOffset(practiceNotes[bi + 1].note))) + 5.5 + 5;
+    const bw = bx2 - bx1, bh = by2 - by1;
+    const br = Math.min(10, bw / 2, bh / 2);
+    bracketSvg += `<rect x="${bx1.toFixed(1)}" y="${by1.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="${br}" ry="${br}" fill="rgba(255,140,0,0.22)" stroke="rgba(220,100,0,0.45)" stroke-width="1"/>`;
+  }
+
+  // 4/4 拍子記号（noteTrack内でスクロール。最初の音符の手前に配置）
+  const tsX   = -slot * 1.0;
+  const tsFs  = Math.round(STAFF_STEP_PX * 2 * 2.1);
+  const tsY1T = staffY(6);
+  const tsY2T = staffY(2);
+  const timeSigSvg = `<text x="${tsX.toFixed(1)}" y="${tsY1T}" font-size="${tsFs}" fill="#555" text-anchor="middle" dominant-baseline="middle" font-family="serif" font-weight="bold">4</text>`
+                   + `<text x="${tsX.toFixed(1)}" y="${tsY2T}" font-size="${tsFs}" fill="#555" text-anchor="middle" dominant-baseline="middle" font-family="serif" font-weight="bold">4</text>`;
+
+  // 縦線（4音ごと）
+  let barlineSvg = '';
+  for (let bi = 0; bi < practiceNotes.length - 1; bi++) {
+    if (bi % 4 !== 3) continue;
+    const bx = (bi * slot + slot / 2).toFixed(1);
+    const bTop = (staffY(8) - 8).toFixed(1);
+    const bBot = (staffY(0) + 8).toFixed(1);
+    barlineSvg += `<line x1="${bx}" y1="${bTop}" x2="${bx}" y2="${bBot}" class="staff-barline"/>`;
+  }
+
+  const notesSvg = practiceNotes.map((entry, i) => {
     const x = i * slot;
     const offset = staffOffset(entry.note);
     const y = staffY(offset);
     const { staffLetter, accidental } = parseNoteForStaff(entry.note);
     const noteData = scalesData.notes[entry.note];
     const col = colorByString ? getStringColor(offset) : null;
+    const stemUp = offset <= 4;
+    const stemEnd = stemUp ? y - STEM_LEN_T : y + STEM_LEN_T;
+    const sx = stemUp ? x + 7 - 0.5 : x - 7 + 0.5;
+    const stemCol = col || '#444';
 
     const ledgers = ledgerOffsets(offset).map(o => {
       const ly = staffY(o);
@@ -1128,13 +1173,15 @@ function renderNoteTrackStaff() {
       ? `<text class="note-accidental" x="${x - 13}" y="${y + 4}"${col ? ` fill="${col}"` : ''}>${accidentalGlyph}</text>`
       : '';
 
-    const labelY = y > STAFF_HEIGHT / 2 ? y - 12 : y + 18;
+    const labelY = y + 18;
 
-    // 指番号（五線譜の上に固定行）
+    // 指番号：符幹の先端の少し外側
     const fingerSvg = _staffShowFingers ? (() => {
       const posStr = entry.position || '';
       const fNum = posStr.includes('開放') ? '0' : (posStr.match(/(\d)/) || [])[1] || '';
-      return fNum ? `<text class="staff-finger-num" x="${x}" y="${PRAC_FINGER_Y}" text-anchor="middle" dominant-baseline="auto">${fNum}</text>` : '';
+      if (!fNum) return '';
+      const fY = stemUp ? stemEnd - 9 : y - 5.5 - 10;
+      return `<text class="staff-finger-num" x="${x}" y="${fY}" text-anchor="middle" dominant-baseline="auto">${fNum}</text>`;
     })() : '';
 
     const headStyle = col ? ` style="fill:${col};stroke:${col};"` : '';
@@ -1142,6 +1189,7 @@ function renderNoteTrackStaff() {
     return `<g class="staff-note" style="transform-origin:${x}px ${y}px">
       <circle class="note-highlight" cx="${x}" cy="${y}" r="15"/>
       ${ledgers}
+      <line x1="${sx}" y1="${y}" x2="${sx}" y2="${stemEnd}" stroke="${stemCol}" stroke-width="1.8"/>
       ${accidentalSvg}
       <ellipse class="note-head" cx="${x}" cy="${y}" rx="7" ry="5.5"${headStyle}/>
       <text class="note-solfege" x="${x}" y="${labelY}"${col ? ` fill="${col}"` : ''}>${noteData.label}</text>
@@ -1149,6 +1197,7 @@ function renderNoteTrackStaff() {
     </g>`;
   }).join('');
 
+  track.innerHTML = timeSigSvg + bracketSvg + barlineSvg + notesSvg;
   updateNoteTrackView();
 }
 
@@ -1684,7 +1733,8 @@ function stopPractice() {
 // サーバーから返ってきた履歴1件を、画面下の履歴リストの先頭に追加する
 // （練習完了直後、リスト全体を再取得しなくても即座に反映するため）
 function addHistoryItem(entry) {
-  const list  = document.getElementById('historyList');
+  const list = document.getElementById('historyList');
+  if (!list) return;
   const empty = list.querySelector('.history-empty');
   if (empty) empty.remove();
   const li = document.createElement('li');
@@ -1695,8 +1745,9 @@ function addHistoryItem(entry) {
 
 // 選択中のプロフィールの練習履歴をサーバーから取得し、履歴リスト全体を描画し直す
 async function renderHistory() {
-  const history = await getHistory(currentProfileId);
   const list = document.getElementById('historyList');
+  if (!list) return;
+  const history = await getHistory(currentProfileId);
   if (history.length === 0) {
     list.innerHTML = '<li class="history-empty">まだ履歴がありません</li>';
     return;
@@ -2261,8 +2312,8 @@ document.getElementById('weakNoteRetryBtn').addEventListener('click', () => {
 async function clearAllHistory() {
   if (!confirm('履歴を全件削除しますか？')) return;
   await clearHistory(currentProfileId);
-  document.getElementById('historyList').innerHTML =
-    '<li class="history-empty">まだ履歴がありません</li>';
+  const histList = document.getElementById('historyList');
+  if (histList) histList.innerHTML = '<li class="history-empty">まだ履歴がありません</li>';
   if (statsLoaded) renderStats();
 }
 
@@ -4385,7 +4436,9 @@ function buildStaffSVG(noteObjs, colorByString = false, keySignature = {}, opts 
   }
   const KS_X0  = 62;   // 調号開始 x（ト音記号から十分離す）
   const KS_W   = 16;   // 1記号あたりの幅
-  const LP     = Math.max(56, KS_X0 + keySigItems.length * KS_W + 18); // +18 で初音符との余白確保
+  const TS_X   = KS_X0 + keySigItems.length * KS_W + 14; // 4/4 拍子記号 x
+  const TS_W   = 18;   // 拍子記号の幅
+  const LP     = Math.max(56, TS_X + TS_W + 14); // +14 で初音符との余白確保
 
   const stepToY = (s) => E4_Y - s * HS;
   const SVG_W   = LP + noteObjs.length * NS + RP;
@@ -4408,10 +4461,13 @@ function buildStaffSVG(noteObjs, colorByString = false, keySignature = {}, opts 
     const ktf = `translate(${kx.toFixed(1)},${ky.toFixed(1)}) scale(1,1.4) translate(${(-kx).toFixed(1)},${(-ky).toFixed(1)})`;
     textParts.push(`<text x="${kx.toFixed(1)}" y="${ky.toFixed(1)}" font-size="${kfs}" fill="#111" text-anchor="middle" dominant-baseline="middle" transform="${ktf}">${item.ch}</text>`);
   });
+  // 4/4 拍子記号（上下に「4」を並べる）
+  const tsfs = Math.round(LS * 2.1); // 各数字のフォントサイズ
+  textParts.push(`<text x="${TS_X.toFixed(1)}" y="${stepToY(6).toFixed(1)}" font-size="${tsfs}" fill="#111" text-anchor="middle" dominant-baseline="middle" font-family="serif" font-weight="bold">4</text>`);
+  textParts.push(`<text x="${TS_X.toFixed(1)}" y="${stepToY(2).toFixed(1)}" font-size="${tsfs}" fill="#111" text-anchor="middle" dominant-baseline="middle" font-family="serif" font-weight="bold">4</text>`);
 
-  // 16分音符：4音ずつ連桁
-  const BEAM_W   = 4.5;
-  const BEAM_GAP = 6;
+  // 四分音符
+  const STEM_LEN = LS * 3.5;
   const lw = NRX + 5;
 
   // 音符データ事前収集（インデックス維持）
@@ -4424,9 +4480,6 @@ function buildStaffSVG(noteObjs, colorByString = false, keySignature = {}, opts 
              x: LP + i * NS, y: stepToY(parsed.step) };
   });
 
-  // 全音符の中で最も高い（y が小さい）位置より上に指番号を揃える
-  const topNoteY = allNoteData.filter(Boolean).reduce((m, nd) => Math.min(m, nd.y), stepToY(8));
-  const FINGER_Y = Math.min(topNoteY - NRY - 12, stepToY(8) - 10);
 
   // 半音ペアを括る半透明ハイライト
   const bracketParts = [];
@@ -4453,106 +4506,66 @@ function buildStaffSVG(noteObjs, colorByString = false, keySignature = {}, opts 
     bracketParts.push(`<rect x="${bx1.toFixed(1)}" y="${by1.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="${br}" ry="${br}" fill="rgba(255,140,0,0.22)" stroke="rgba(220,100,0,0.45)" stroke-width="1"/>`);
   }
 
-  for (let gi = 0; gi < allNoteData.length; gi += 4) {
-    const group = allNoteData.slice(gi, gi + 4).filter(Boolean);
-    if (!group.length) continue;
+  for (const nd of allNoteData) {
+    if (!nd) continue;
+    const { i, noteObj, step, accidental, x, y } = nd;
+    const col    = colorByString ? getStringColor(step) : '#111';
+    const stemUp = step <= 4;
+    const stemEnd = stemUp ? y - STEM_LEN : y + STEM_LEN;
 
-    // グループ平均ステップで符尾の向きを統一
-    const avgStep = group.reduce((s, n) => s + n.step, 0) / group.length;
-    const stemUp  = avgStep <= 4;
-    const STEM_LEN = LS * 3.2;
-
-    // 連桁の傾き：最初と最後の音符の符尾端（最大 HS/2 までに制限）
-    const first = group[0], last = group[group.length - 1];
-    let byS = stemUp ? first.y - STEM_LEN : first.y + STEM_LEN;
-    let byE = stemUp ? last.y  - STEM_LEN : last.y  + STEM_LEN;
-    const maxTilt = HS / 2;
-    if (Math.abs(byE - byS) > maxTilt) {
-      byE = byS + Math.sign(byE - byS) * maxTilt;
-    }
-    // 最短符尾を保証（全音符が STEM_LEN 以上になるよう連桁を押し上げ/押し下げ）
-    for (const nd of group) {
-      const nat = stemUp ? nd.y - STEM_LEN : nd.y + STEM_LEN;
-      const t   = group.length > 1 ? (nd.x - first.x) / (last.x - first.x) : 0;
-      const bAt = byS + (byE - byS) * t;
-      if (stemUp && bAt > nat) { const d = bAt - nat; byS -= d; byE -= d; }
-      if (!stemUp && bAt < nat) { const d = nat - bAt; byS += d; byE += d; }
-    }
-
-    // 音符ごとに符尾端を線形補間で計算
-    const beamYAt = (x) => {
-      if (group.length < 2) return byS;
-      return byS + (byE - byS) * (x - first.x) / (last.x - first.x);
-    };
-
-    for (const nd of group) {
-      const { i, noteObj, step, accidental, x, y } = nd;
-      const col    = colorByString ? getStringColor(step) : '#111';
-      const stemEnd = beamYAt(x);
-
-      // 臨時記号（調号に含まれる#/♭は省略）
-      const noteStrAcc = typeof noteObj === 'string' ? noteObj : noteObj?.note;
-      const noteLetter = noteStrAcc ? noteStrAcc[0].toUpperCase() : null;
-      const inKeySig = !opts.showAllAccidentals && noteLetter && (
-        (accidental === 'sharp' && (keySignature || {})[noteLetter] === 's') ||
-        (accidental === 'flat'  && (keySignature || {})[noteLetter] === 'f')
-      );
-      if (!inKeySig) {
-        // 音符左端の少し手前を中心に縦長で表示
-        const ax = x - NRX - 6;
-        const ay = y;
-        // 中心点(ax,ay)を固定したまま縦方向に1.4倍拡大
-        const tf = `translate(${ax.toFixed(1)},${ay.toFixed(1)}) scale(1,1.4) translate(${(-ax).toFixed(1)},${(-ay).toFixed(1)})`;
-        if (accidental === 'sharp') {
-          textParts.push(`<text x="${ax.toFixed(1)}" y="${ay.toFixed(1)}" font-size="22" class="staff-acc" fill="${col}" dominant-baseline="middle" text-anchor="middle" transform="${tf}">♯</text>`);
-        } else if (accidental === 'flat') {
-          textParts.push(`<text x="${ax.toFixed(1)}" y="${ay.toFixed(1)}" font-size="24" class="staff-acc" fill="${col}" dominant-baseline="middle" text-anchor="middle" transform="${tf}">♭</text>`);
-        }
-      }
-
-      // 音符頭（斜め楕円・傾き+20°）
-      noteParts.push(`<ellipse cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" rx="${NRX}" ry="${NRY}" fill="${col}" stroke="${col}" stroke-width="0.5" transform="rotate(13,${x.toFixed(1)},${y.toFixed(1)})"/>`);
-
-      // 符尾（連桁端まで）
-      const sx = stemUp ? x + NRX - 0.5 : x - NRX + 0.5;
-      noteParts.push(`<line x1="${sx.toFixed(1)}" y1="${y.toFixed(1)}" x2="${sx.toFixed(1)}" y2="${stemEnd.toFixed(1)}" stroke="${col}" stroke-width="1.8"/>`);
-
-      // 加線
-      if (step < 0) {
-        for (let s = -2; s >= step; s -= 2) {
-          const ly = stepToY(s).toFixed(1);
-          lineParts.push(`<line x1="${(x - lw).toFixed(1)}" y1="${ly}" x2="${(x + lw).toFixed(1)}" y2="${ly}" class="ledger-line"/>`);
-        }
-      } else if (step > 8) {
-        for (let s = 10; s <= step; s += 2) {
-          const ly = stepToY(s).toFixed(1);
-          lineParts.push(`<line x1="${(x - lw).toFixed(1)}" y1="${ly}" x2="${(x + lw).toFixed(1)}" y2="${ly}" class="ledger-line"/>`);
-        }
-      }
-
-      // 小節線：16個目と17個目の間（インデックス15の右）
-      if (i === 15) {
-        const bx = (x + NS / 2).toFixed(1);
-        lineParts.push(`<line x1="${bx}" y1="${(stepToY(8) - 8).toFixed(1)}" x2="${bx}" y2="${(stepToY(0) + 8).toFixed(1)}" class="staff-barline"/>`);
-      }
-
-      // 指番号（全音符共通の高さ FINGER_Y に描画）
-      if (opts.showFingers) {
-        const posStr = typeof noteObj === 'object' ? (noteObj?.position || '') : '';
-        const fNum   = posStr.includes('開放') ? '0' : (posStr.match(/(\d)/) || [])[1] || '';
-        if (fNum !== '') {
-          textParts.push(`<text x="${x.toFixed(1)}" y="${FINGER_Y.toFixed(1)}" font-size="11" fill="#444" text-anchor="middle" dominant-baseline="auto" font-weight="bold">${fNum}</text>`);
-        }
+    // 臨時記号（調号に含まれる#/♭は省略）
+    const noteStrAcc = typeof noteObj === 'string' ? noteObj : noteObj?.note;
+    const noteLetter = noteStrAcc ? noteStrAcc[0].toUpperCase() : null;
+    const inKeySig = !opts.showAllAccidentals && noteLetter && (
+      (accidental === 'sharp' && (keySignature || {})[noteLetter] === 's') ||
+      (accidental === 'flat'  && (keySignature || {})[noteLetter] === 'f')
+    );
+    if (!inKeySig) {
+      const ax = x - NRX - 6;
+      const ay = y;
+      const tf = `translate(${ax.toFixed(1)},${ay.toFixed(1)}) scale(1,1.4) translate(${(-ax).toFixed(1)},${(-ay).toFixed(1)})`;
+      if (accidental === 'sharp') {
+        textParts.push(`<text x="${ax.toFixed(1)}" y="${ay.toFixed(1)}" font-size="22" class="staff-acc" fill="${col}" dominant-baseline="middle" text-anchor="middle" transform="${tf}">♯</text>`);
+      } else if (accidental === 'flat') {
+        textParts.push(`<text x="${ax.toFixed(1)}" y="${ay.toFixed(1)}" font-size="24" class="staff-acc" fill="${col}" dominant-baseline="middle" text-anchor="middle" transform="${tf}">♭</text>`);
       }
     }
 
-    // 連桁2本（斜め）
-    const x1b = first.x + (stemUp ?  NRX - 0.5 : -(NRX - 0.5));
-    const x2b = last.x  + (stemUp ?  NRX - 0.5 : -(NRX - 0.5));
-    lineParts.push(`<line x1="${x1b.toFixed(1)}" y1="${byS.toFixed(1)}" x2="${x2b.toFixed(1)}" y2="${byE.toFixed(1)}" stroke="#111" stroke-width="${BEAM_W}" stroke-linecap="square"/>`);
-    const b2S = stemUp ? byS + BEAM_GAP + BEAM_W : byS - BEAM_GAP - BEAM_W;
-    const b2E = stemUp ? byE + BEAM_GAP + BEAM_W : byE - BEAM_GAP - BEAM_W;
-    lineParts.push(`<line x1="${x1b.toFixed(1)}" y1="${b2S.toFixed(1)}" x2="${x2b.toFixed(1)}" y2="${b2E.toFixed(1)}" stroke="#111" stroke-width="${BEAM_W}" stroke-linecap="square"/>`);
+    // 音符頭（斜め楕円・傾き13°）
+    noteParts.push(`<ellipse cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" rx="${NRX}" ry="${NRY}" fill="${col}" stroke="${col}" stroke-width="0.5" transform="rotate(13,${x.toFixed(1)},${y.toFixed(1)})"/>`);
+
+    // 符尾（四分音符：直線）
+    const sx = stemUp ? x + NRX - 0.5 : x - NRX + 0.5;
+    noteParts.push(`<line x1="${sx.toFixed(1)}" y1="${y.toFixed(1)}" x2="${sx.toFixed(1)}" y2="${stemEnd.toFixed(1)}" stroke="${col}" stroke-width="1.8"/>`);
+
+    // 加線
+    if (step < 0) {
+      for (let s = -2; s >= step; s -= 2) {
+        const ly = stepToY(s).toFixed(1);
+        lineParts.push(`<line x1="${(x - lw).toFixed(1)}" y1="${ly}" x2="${(x + lw).toFixed(1)}" y2="${ly}" class="ledger-line"/>`);
+      }
+    } else if (step > 8) {
+      for (let s = 10; s <= step; s += 2) {
+        const ly = stepToY(s).toFixed(1);
+        lineParts.push(`<line x1="${(x - lw).toFixed(1)}" y1="${ly}" x2="${(x + lw).toFixed(1)}" y2="${ly}" class="ledger-line"/>`);
+      }
+    }
+
+    // 小節線：4音ごと（最終音の後は除く）
+    if (i % 4 === 3 && i < noteObjs.length - 1) {
+      const bx = (x + NS / 2).toFixed(1);
+      lineParts.push(`<line x1="${bx}" y1="${(stepToY(8) - 8).toFixed(1)}" x2="${bx}" y2="${(stepToY(0) + 8).toFixed(1)}" class="staff-barline"/>`);
+    }
+
+    // 指番号：符幹の先端の少し外側に配置
+    if (opts.showFingers) {
+      const posStr = typeof noteObj === 'object' ? (noteObj?.position || '') : '';
+      const fNum   = posStr.includes('開放') ? '0' : (posStr.match(/(\d)/) || [])[1] || '';
+      if (fNum !== '') {
+        const fY = stemUp ? stemEnd - 9 : y - NRY - 10;
+        textParts.push(`<text x="${x.toFixed(1)}" y="${fY.toFixed(1)}" font-size="11" fill="#444" text-anchor="middle" dominant-baseline="auto" font-weight="bold">${fNum}</text>`);
+      }
+    }
   }
 
   // 終止線（二重線）：スタッフ右端
@@ -5635,7 +5648,6 @@ document.getElementById('guestBtn').addEventListener('click', async () => {
   document.getElementById('statsTabBtn').style.display    = 'none';
   document.getElementById('adminTabBtn').style.display    = 'none';
   document.getElementById('settingsTabBtn').style.display = 'none';
-  document.getElementById('historySection').style.display = 'none';
   document.getElementById('guestNote').style.display = 'block';
 
   // ゲストは管理者・被験者になり得ないので、この2つは必ず既定値に戻し、非表示にする
@@ -5658,7 +5670,6 @@ function resetGuestUI() {
   document.getElementById('logoutBtn').title = 'ログアウト';
   document.getElementById('statsTabBtn').style.display   = '';
   document.getElementById('settingsTabBtn').style.display = '';
-  document.getElementById('historySection').style.display = '';
   document.getElementById('guestNote').style.display = 'none';
 }
 
