@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>研究データ閲覧</title>
+<title>データ観覧</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
@@ -129,6 +129,23 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
 .ll-dash  { display: inline-flex; align-items: center; gap: 5px; opacity: .8; }
 .ll-dash::before  { content: ''; display: inline-block; width: 20px; height: 2px; background: repeating-linear-gradient(to right, currentColor 0, currentColor 5px, transparent 5px, transparent 9px); }
 
+/* グループ比較カード */
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.compare-cell { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.compare-cell-label { font-size: .75rem; font-weight: 700; color: var(--accent); margin-bottom: 10px; letter-spacing: .04em; }
+.compare-flow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.compare-num { font-size: 1.5rem; font-weight: 700; line-height: 1; }
+.compare-pre-num  { color: #93c5fd; }
+.compare-post-num { color: #6ee7b7; }
+.compare-arrow-icon { color: var(--muted); font-size: 1.1rem; }
+.compare-diff-badge { font-size: 1.3rem; font-weight: 700; margin-left: 4px; }
+.compare-sub { font-size: .75rem; color: var(--muted); }
+/* 日別フィルター */
+.day-filter-bar { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
+.day-filter-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 999px; font-size: .78rem; cursor: pointer; transition: all .15s; }
+.day-filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+.day-filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* ── 被験者情報 ── */
 .subject-info { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .info-chip { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 14px; font-size: .82rem; }
@@ -150,7 +167,7 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
 <body>
 
 <header>
-  <h1>🎻 研究データ閲覧</h1>
+  <h1>データ観覧</h1>
   <div class="header-right">
     <span id="viewerUserName" style="font-size:.85rem;color:var(--muted)"></span>
     <button id="menuToggle" onclick="toggleSidebar()">☰ 被験者</button>
@@ -175,6 +192,20 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
     <!-- グループ全体 -->
     <div class="tab-panel active" id="tab-group">
       <div class="stat-grid" id="groupStats"><div class="stat-card loading">読み込み中…</div></div>
+      <!-- グループ比較カード -->
+      <div class="card" id="compareCard" style="display:none">
+        <h2>グループ比較：事前 → 事後 差</h2>
+        <div class="compare-grid" id="compareGrid"></div>
+      </div>
+      <!-- 日別フィルター -->
+      <div class="card" style="padding:12px 18px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:.78rem;color:var(--muted);white-space:nowrap">日別表示：</span>
+          <div class="day-filter-bar" id="dayFilterBar">
+            <button class="day-filter-btn active" data-day="all" onclick="setDayFilter(null)">全日</button>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <h2>被験者別 事前→事後 正答率</h2>
         <div class="chart-wrap"><canvas id="chartSubjectCompare"></canvas></div>
@@ -216,6 +247,17 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
         <h2>音階別 グループ平均正答率</h2>
         <div class="chart-wrap"><canvas id="chartScaleCompare"></canvas></div>
       </div>
+      <div class="card">
+        <div class="card-header-row">
+          <h2>被験者別 事前→事後 連続推移</h2>
+          <div class="filter-btns">
+            <button class="group-filter-btn active" data-flow="all"    onclick="setFlowFilter('all')">全体</button>
+            <button class="group-filter-btn"        data-flow="free"   onclick="setFlowFilter('free')">アプリ練習あり</button>
+            <button class="group-filter-btn"        data-flow="nofree" onclick="setFlowFilter('nofree')">アプリ練習なし</button>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="chartFlowLine" style="max-height:360px"></canvas></div>
+      </div>
     </div>
 
     <!-- 個人詳細 -->
@@ -242,6 +284,7 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
 let subjects = [];
 let selectedSubject = null;
 let groupStats = null;
+let selectedDay = null; // null=全日 | 数値=指定日
 const charts = {};
 
 // ─── ユーティリティ ──────────────────────────────────────────────────
@@ -363,6 +406,174 @@ let groupFilter = 'all'; // 'all' | 'free' | 'nofree'
 let groupTimelineFilter = 'both'; // 'both' | 'test' | 'baseline'
 let scaleFilter = ''; // '' = 全音階, or scale name
 let groupTimeline = null;
+let flowFilter = 'all';
+
+function setFlowFilter(f) {
+  flowFilter = f;
+  document.querySelectorAll('[data-flow]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.flow === f);
+  });
+  renderFlowChart();
+}
+
+function renderFlowChart() {
+  if (!groupTimeline) return;
+  const filteredTl = groupTimeline.filter(s =>
+    flowFilter === 'all'    ? true :
+    flowFilter === 'free'   ? s.with_practice :
+                              !s.with_practice
+  );
+  const maxDay = filteredTl.reduce((m, s) => Math.max(m, s.days.length), 0);
+  if (maxDay === 0) return;
+
+  // X軸: Day1事前, Day1事後, Day2事前, Day2事後, ...
+  const labels = [];
+  for (let d = 1; d <= maxDay; d++) {
+    labels.push(`Day${d}事前`);
+    labels.push(`Day${d}事後`);
+  }
+
+  const nofreeCount = filteredTl.filter(s => !s.with_practice).length;
+  let nofreeIdx = 0;
+
+  const datasets = filteredTl.map((s, si) => {
+    const c = colorFor(si);
+    let offset = 0;
+    if (!s.with_practice && nofreeCount > 1) {
+      offset = +(( nofreeIdx - (nofreeCount - 1) / 2 ) * 0.4).toFixed(2);
+      nofreeIdx++;
+    }
+    const rawData = [];
+    const data = [];
+    for (let d = 1; d <= maxDay; d++) {
+      const day = s.days.find(x => x.day === d);
+      rawData.push(day ? day.baseline : null);
+      rawData.push(day ? day.test     : null);
+      data.push(day ? +(day.baseline + offset).toFixed(2) : null);
+      data.push(day ? +(day.test     + offset).toFixed(2) : null);
+    }
+    return {
+      label: s.name,
+      data, _rawData: rawData,
+      borderColor: c,
+      backgroundColor: c.replace(/[\d.]+\)$/, '0.15)'),
+      borderWidth: 2,
+      pointRadius: 5,
+      pointHoverRadius: 7,
+      pointStyle: (ctx) => ctx.dataIndex % 2 === 0 ? 'triangle' : 'circle',
+      spanGaps: false,
+      tension: 0.1,
+    };
+  });
+
+  destroyChart('flowLine');
+  const ctxFL = document.getElementById('chartFlowLine');
+  if (!ctxFL) return;
+  const allVals = datasets.flatMap(d => d.data.filter(v => v !== null));
+  const flMin = allVals.length ? Math.max(0,  Math.floor((Math.min(...allVals) - 5) / 5) * 5) : 0;
+  const flMax = allVals.length ? Math.min(100, Math.ceil ((Math.max(...allVals) + 5) / 5) * 5) : 100;
+  const cfgFL = tabDefaults();
+  cfgFL.scales.x = { ticks: { color: '#8892a4', maxRotation: 45, font: { size: 11 } }, grid: { color: '#2a3a5c' } };
+  cfgFL.scales.y = { min: flMin, max: flMax, ticks: { color: '#8892a4', callback: v => v + '%' }, grid: { color: '#2a3a5c' } };
+  cfgFL.plugins.legend = { labels: { color: '#8892a4', font: { family: 'Noto Sans JP' }, boxWidth: 12, boxHeight: 12 } };
+  cfgFL.plugins.tooltip = {
+    callbacks: {
+      title: items => {
+        const idx = items[0].dataIndex;
+        const day = Math.floor(idx / 2) + 1;
+        const phase = idx % 2 === 0 ? '事前' : '事後';
+        return `Day${day} ${phase}`;
+      },
+      label: item => {
+        const raw = item.dataset._rawData ? item.dataset._rawData[item.dataIndex] : item.parsed.y;
+        const val = raw != null ? raw.toFixed(1) : '—';
+        return `${item.dataset.label}: ${val}%`;
+      }
+    }
+  };
+  charts['flowLine'] = new Chart(ctxFL.getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets },
+    options: { ...cfgFL, responsive: true }
+  });
+}
+
+// 日別フィルター
+function setDayFilter(day) {
+  selectedDay = day;
+  document.querySelectorAll('.day-filter-btn').forEach(btn => {
+    const isAll = btn.dataset.day === 'all';
+    btn.classList.toggle('active', day === null ? isAll : !isAll && parseInt(btn.dataset.day) === day);
+  });
+  renderGroupStats();
+}
+
+function renderDayFilterBtns() {
+  if (!groupTimeline) return;
+  const maxDay = groupTimeline.reduce((m, s) => Math.max(m, s.days.length), 0);
+  const bar = document.getElementById('dayFilterBar');
+  if (!bar || maxDay === 0) return;
+  let html = `<button class="day-filter-btn ${selectedDay === null ? 'active' : ''}" data-day="all" onclick="setDayFilter(null)">全日</button>`;
+  for (let d = 1; d <= maxDay; d++) {
+    html += `<button class="day-filter-btn ${selectedDay === d ? 'active' : ''}" data-day="${d}" onclick="setDayFilter(${d})">Day${d}</button>`;
+  }
+  bar.innerHTML = html;
+}
+
+// 日別絞り込み時にgroupTimelineから被験者ごとのその日のstatsを取得
+function getSubjectsForDay(allSubs, day) {
+  if (day === null || !groupTimeline) return allSubs;
+  return allSubs.map(s => {
+    const tl = groupTimeline.find(t => t.name === s.name);
+    if (!tl) return { ...s, baseline_avg: null, test_avg: null };
+    const dayData = tl.days.find(d => d.day === day);
+    return {
+      ...s,
+      baseline_avg: dayData?.baseline ?? null,
+      test_avg:     dayData?.test     ?? null,
+    };
+  });
+}
+
+// グループ比較カード
+function renderCompareCard(allSubs) {
+  const withSubs = allSubs.filter(s => s.with_practice);
+  const noSubs   = allSubs.filter(s => !s.with_practice);
+  function stats(subs) {
+    if (!subs.length) return null;
+    const bVals = subs.map(s=>s.baseline_avg).filter(v=>v!=null);
+    const tVals = subs.map(s=>s.test_avg).filter(v=>v!=null);
+    const base = bVals.length ? Math.round(bVals.reduce((a,v)=>a+v,0)/bVals.length*10)/10 : null;
+    const test = tVals.length ? Math.round(tVals.reduce((a,v)=>a+v,0)/tVals.length*10)/10 : null;
+    const diff = base !== null && test !== null ? Math.round((test - base)*10)/10 : null;
+    const n = Math.max(bVals.length, tVals.length);
+    if (n === 0) return null;
+    return { base, test, diff, n };
+  }
+  const ws = stats(withSubs);
+  const ns = stats(noSubs);
+  if (!ws && !ns) { document.getElementById('compareCard').style.display = 'none'; return; }
+  function cellHtml(label, s) {
+    if (!s) return `<div class="compare-cell"><div class="compare-cell-label">${label}</div><div class="empty" style="padding:8px 0">データなし</div></div>`;
+    const baseStr = s.base !== null ? s.base + '%' : '—';
+    const testStr = s.test !== null ? s.test + '%' : '—';
+    const diffStr = s.diff !== null ? (s.diff > 0 ? '+' : '') + s.diff + '%' : '—';
+    const diffColor = s.diff !== null ? (s.diff >= 3 ? 'good' : s.diff >= 0 ? 'warn' : 'bad') : '';
+    return `
+      <div class="compare-cell">
+        <div class="compare-cell-label">${label}</div>
+        <div class="compare-flow">
+          <span class="compare-num compare-pre-num">${baseStr}</span>
+          <span class="compare-arrow-icon">→</span>
+          <span class="compare-num compare-post-num">${testStr}</span>
+          <span class="compare-diff-badge ${diffColor}">${diffStr}</span>
+        </div>
+        <div class="compare-sub">事前 → 事後　データあり被験者 ${s.n}名</div>
+      </div>`;
+  }
+  document.getElementById('compareGrid').innerHTML = cellHtml('アプリ練習あり', ws) + cellHtml('アプリ練習なし', ns);
+  document.getElementById('compareCard').style.display = '';
+}
 
 async function loadGroupStats() {
   const qs = scaleFilter ? `?scale=${encodeURIComponent(scaleFilter)}` : '';
@@ -445,7 +656,7 @@ function renderGroupStats() {
   // 音階フィルターボタン更新
   renderScaleFilterBtns(by_scale);
 
-  // グループ別サマリーカード生成
+  // グループ別サマリーカード（全日統計は常に全日分を表示）
   function groupCards(subs) {
     const avgBase = subs.length ? Math.round(subs.reduce((a,s)=>a+s.baseline_avg,0)/subs.length*10)/10 : 0;
     const avgTest = subs.length ? Math.round(subs.reduce((a,s)=>a+s.test_avg,0)/subs.length*10)/10 : 0;
@@ -465,8 +676,16 @@ function renderGroupStats() {
     `<div class="stat-group-label">アプリ練習あり</div>` + groupCards(withSubs) +
     `<div class="stat-group-label">アプリ練習なし</div>` + groupCards(noSubs);
 
-  // チャートフィルター用（グラフ絞り込みに使用）
-  const subs = allSubs.filter(s =>
+  // 日別フィルターボタン描画（初回のみデータから生成）
+  renderDayFilterBtns();
+
+  // 比較カード（選択日に対応した数値で表示）
+  const subsForCompare = getSubjectsForDay(allSubs, selectedDay);
+  renderCompareCard(subsForCompare);
+
+  // チャートフィルター用（グラフ絞り込みに使用）、日別データを適用
+  const subsFiltered = getSubjectsForDay(allSubs, selectedDay);
+  const subs = subsFiltered.filter(s =>
     groupFilter === 'all'   ? true :
     groupFilter === 'free'  ? s.with_practice :
                               !s.with_practice
@@ -475,20 +694,23 @@ function renderGroupStats() {
   // フィルターボタン更新（data-filter / data-filter2 両方）
   syncGroupFilterBtns();
 
-  // 被験者比較 横棒グラフ
+  // 被験者比較 横棒グラフ（日別選択時はその日のデータを使用）
   destroyChart('subjectCompare');
   const ctxSC = document.getElementById('chartSubjectCompare').getContext('2d');
   const cfg = tabDefaults();
   cfg.indexAxis = 'y';
   cfg.scales.x = { min: 0, max: 100, ticks: { color: '#8892a4', callback: v => v + '%' }, grid: { color: '#2a3a5c' } };
   cfg.scales.y = { ticks: { color: '#8892a4' }, grid: { color: 'transparent' } };
+  // 日別選択時はその日にデータがある被験者のみ表示
+  const subsChart = selectedDay !== null ? subs.filter(s => s.baseline_avg !== null || s.test_avg !== null) : subs;
+  const dayLabel = selectedDay !== null ? ` (Day${selectedDay})` : '';
   charts['subjectCompare'] = new Chart(ctxSC, {
     type: 'bar',
     data: {
-      labels: subs.map(s => s.name),
+      labels: subsChart.map(s => s.name),
       datasets: [
-        { label: '事前', data: subs.map(s => s.baseline_avg), backgroundColor: 'rgba(79,142,247,0.7)', borderColor: 'rgba(79,142,247,1)', borderWidth: 1 },
-        { label: '事後', data: subs.map(s => s.test_avg),     backgroundColor: 'rgba(52,211,153,0.7)', borderColor: 'rgba(52,211,153,1)', borderWidth: 1 },
+        { label: `事前${dayLabel}`, data: subsChart.map(s => s.baseline_avg), backgroundColor: 'rgba(79,142,247,0.7)', borderColor: 'rgba(79,142,247,1)', borderWidth: 1 },
+        { label: `事後${dayLabel}`, data: subsChart.map(s => s.test_avg),     backgroundColor: 'rgba(52,211,153,0.7)', borderColor: 'rgba(52,211,153,1)', borderWidth: 1 },
       ]
     },
     options: { ...cfg, responsive: true }
@@ -573,6 +795,9 @@ function renderGroupStats() {
     },
     options: { ...cfg2, responsive: true }
   });
+
+  // 事前→事後 連続推移グラフ
+  renderFlowChart();
 }
 
 // ─── 個人詳細 ────────────────────────────────────────────────────────
@@ -603,6 +828,10 @@ async function loadIndividual(pid) {
         </div>
       </div>
       <div class="chart-wrap"><canvas id="chartTimeline"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>事前→事後 連続推移</h2>
+      <div class="chart-wrap"><canvas id="chartIndivFlow" style="max-height:320px"></canvas></div>
     </div>
     <div class="card">
       <h2>練習セッション一覧</h2>
@@ -642,6 +871,54 @@ async function loadIndividual(pid) {
       tension: 0.2,
     });
     ci++;
+  }
+
+  // 個人 事前→事後 連続推移グラフ
+  destroyChart('indivFlow');
+  const ctxIF = document.getElementById('chartIndivFlow')?.getContext('2d');
+  if (ctxIF) {
+    const flowLabels = [];
+    allDates.forEach((_, di) => { flowLabels.push(`Day${di+1}事前`); flowLabels.push(`Day${di+1}事後`); });
+    const scalesUsed = [...new Set(timeline.filter(r => r.phase==='baseline'||r.phase==='test').map(r => r.scale))];
+    const flowDatasets = scalesUsed.map((scale, fci) => {
+      const c = colorFor(fci);
+      const data = [];
+      allDates.forEach(d => {
+        const bRecs = timeline.filter(r => r.scale===scale && r.phase==='baseline' && r.practiced_at.startsWith(d));
+        const tRecs = timeline.filter(r => r.scale===scale && r.phase==='test'     && r.practiced_at.startsWith(d));
+        const bVal = bRecs.length ? Math.round(bRecs.reduce((a,r)=>a+r.accuracy,0)/bRecs.length*10)/10 : null;
+        const tVal = tRecs.length ? Math.round(tRecs.reduce((a,r)=>a+r.accuracy,0)/tRecs.length*10)/10 : null;
+        data.push(bVal); data.push(tVal);
+      });
+      return {
+        label: scale, data,
+        borderColor: c, backgroundColor: c.replace(/[\d.]+\)$/, '0.15)'),
+        borderWidth: 2, pointRadius: 5, pointHoverRadius: 7,
+        pointStyle: (ctx) => ctx.dataIndex % 2 === 0 ? 'triangle' : 'circle',
+        spanGaps: false, tension: 0.1,
+      };
+    });
+    const allIF = flowDatasets.flatMap(d => d.data.filter(v => v !== null));
+    const ifMin = allIF.length ? Math.max(0,  Math.floor((Math.min(...allIF)-5)/5)*5) : 0;
+    const ifMax = allIF.length ? Math.min(100, Math.ceil ((Math.max(...allIF)+5)/5)*5) : 100;
+    const cfgIF = tabDefaults();
+    cfgIF.scales.x = { ticks: { color: '#8892a4', maxRotation: 45, font: { size: 11 } }, grid: { color: '#2a3a5c' } };
+    cfgIF.scales.y = { min: ifMin, max: ifMax, ticks: { color: '#8892a4', callback: v => v+'%' }, grid: { color: '#2a3a5c' } };
+    cfgIF.plugins.legend = { labels: { color: '#8892a4', font: { family: 'Noto Sans JP' }, boxWidth: 12, boxHeight: 12 } };
+    cfgIF.plugins.tooltip = {
+      callbacks: {
+        title: items => {
+          const idx = items[0].dataIndex;
+          const day = Math.floor(idx / 2) + 1;
+          return `Day${day} ${idx % 2 === 0 ? '事前' : '事後'}`;
+        }
+      }
+    };
+    charts['indivFlow'] = new Chart(ctxIF, {
+      type: 'line',
+      data: { labels: flowLabels, datasets: flowDatasets },
+      options: { ...cfgIF, responsive: true }
+    });
   }
 
   destroyChart('timeline');
