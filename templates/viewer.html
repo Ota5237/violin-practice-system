@@ -186,11 +186,21 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('group')">グループ全体</button>
       <button class="tab-btn" id="tabIndividual" onclick="switchTab('individual')">個人詳細</button>
-      <button class="tab-btn" onclick="switchTab('notes')">音符分析</button>
     </div>
 
     <!-- グループ全体 -->
     <div class="tab-panel active" id="tab-group">
+      <!-- フェーズ切り替え -->
+      <div class="card" style="padding:12px 18px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:.78rem;color:var(--muted);white-space:nowrap">フェーズ：</span>
+          <div class="group-filter-bar" id="phaseFilterBar">
+            <button class="group-filter-btn active" data-phase=""  onclick="setPhaseFilter('')">全フェーズ</button>
+            <button class="group-filter-btn"        data-phase="1" onclick="setPhaseFilter('1')">フェーズ1</button>
+            <button class="group-filter-btn"        data-phase="2" onclick="setPhaseFilter('2')">フェーズ2</button>
+          </div>
+        </div>
+      </div>
       <div class="stat-grid" id="groupStats"><div class="stat-card loading">読み込み中…</div></div>
       <!-- グループ比較カード -->
       <div class="card" id="compareCard" style="display:none">
@@ -265,22 +275,12 @@ main { flex: 1; overflow-y: auto; padding: 20px; }
       <div id="individualContent"><p class="empty">左の被験者一覧から選択してください</p></div>
     </div>
 
-    <!-- 音符分析 -->
-    <div class="tab-panel" id="tab-notes">
-      <div class="card">
-        <h2>全被験者合算：苦手音符ランキング（事前・事後）</h2>
-        <div class="chart-wrap"><canvas id="chartGroupNotes"></canvas></div>
-      </div>
-      <div class="card" id="indivNotesCard" style="display:none">
-        <h2 id="indivNotesTitle">個人苦手音符</h2>
-        <div class="chart-wrap"><canvas id="chartIndivNotes"></canvas></div>
-      </div>
-    </div>
   </main>
 </div>
 
 <script>
 // ─── グローバル状態 ─────────────────────────────────────────────────
+const SET_LENGTH_DAYS = 7; // 1セット（研究の1クール）の長さ（日数）。運用ルールが変わったらここを変更する
 let subjects = [];
 let selectedSubject = null;
 let groupStats = null;
@@ -322,12 +322,11 @@ function tabDefaults() { return JSON.parse(JSON.stringify(CHART_DEFAULTS)); }
 // ─── タブ切り替え ────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach((b,i) => {
-    const names = ['group','individual','notes'];
+    const names = ['group','individual'];
     b.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
-  if (name === 'notes') loadNoteTab();
 }
 
 async function doLogout() {
@@ -362,8 +361,6 @@ function selectSubject(id) {
     document.getElementById('tabIndividual').textContent = `個人詳細：${selectedSubject.name}`;
     loadIndividual(id);
     switchTab('individual');
-    // 音符タブが開いていれば更新
-    if (document.getElementById('tab-notes').classList.contains('active')) loadNoteTab();
   }
 }
 
@@ -405,8 +402,18 @@ function setGroupTimelineFilter(mode) {
 let groupFilter = 'all'; // 'all' | 'free' | 'nofree'
 let groupTimelineFilter = 'both'; // 'both' | 'test' | 'baseline'
 let scaleFilter = ''; // '' = 全音階, or scale name
+let phaseFilter = ''; // '' = 全フェーズ, '1' = フェーズ1, '2' = フェーズ2
 let groupTimeline = null;
 let flowFilter = 'all';
+
+function setPhaseFilter(phase) {
+  phaseFilter = phase;
+  scaleFilter = ''; // フェーズと音階の絞り込みは併用しない（フェーズ選択で音階側はリセット）
+  document.querySelectorAll('#phaseFilterBar .group-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.phase === phase);
+  });
+  loadGroupStats();
+}
 
 function setFlowFilter(f) {
   flowFilter = f;
@@ -423,14 +430,15 @@ function renderFlowChart() {
     flowFilter === 'free'   ? s.with_practice :
                               !s.with_practice
   );
-  const maxDay = filteredTl.reduce((m, s) => Math.max(m, s.days.length), 0);
-  if (maxDay === 0) return;
+  // 1セット分（SET_LENGTH_DAYS日）は、データがまだ無い日も含めて最初から表示する。
+  // 実データがそれより多い日数ぶんある場合は、削らずそのまま表示する
+  const maxDay = Math.max(SET_LENGTH_DAYS, filteredTl.reduce((m, s) => Math.max(m, s.days.length), 0));
 
-  // X軸: Day1事前, Day1事後, Day2事前, Day2事後, ...
+  // X軸: day1B（Before=事前）, day1A（After=事後）, day2B, day2A, ...
   const labels = [];
   for (let d = 1; d <= maxDay; d++) {
-    labels.push(`Day${d}事前`);
-    labels.push(`Day${d}事後`);
+    labels.push(`day${d}B`);
+    labels.push(`day${d}A`);
   }
 
   const nofreeCount = filteredTl.filter(s => !s.with_practice).length;
@@ -481,8 +489,8 @@ function renderFlowChart() {
       title: items => {
         const idx = items[0].dataIndex;
         const day = Math.floor(idx / 2) + 1;
-        const phase = idx % 2 === 0 ? '事前' : '事後';
-        return `Day${day} ${phase}`;
+        const phase = idx % 2 === 0 ? 'B' : 'A';
+        return `day${day}${phase}`;
       },
       label: item => {
         const raw = item.dataset._rawData ? item.dataset._rawData[item.dataIndex] : item.parsed.y;
@@ -510,9 +518,10 @@ function setDayFilter(day) {
 
 function renderDayFilterBtns() {
   if (!groupTimeline) return;
-  const maxDay = groupTimeline.reduce((m, s) => Math.max(m, s.days.length), 0);
+  // 1セット分（SET_LENGTH_DAYS日）は、データがまだ無い日も含めて最初からボタンを出す
+  const maxDay = Math.max(SET_LENGTH_DAYS, groupTimeline.reduce((m, s) => Math.max(m, s.days.length), 0));
   const bar = document.getElementById('dayFilterBar');
-  if (!bar || maxDay === 0) return;
+  if (!bar) return;
   let html = `<button class="day-filter-btn ${selectedDay === null ? 'active' : ''}" data-day="all" onclick="setDayFilter(null)">全日</button>`;
   for (let d = 1; d <= maxDay; d++) {
     html += `<button class="day-filter-btn ${selectedDay === d ? 'active' : ''}" data-day="${d}" onclick="setDayFilter(${d})">Day${d}</button>`;
@@ -576,7 +585,10 @@ function renderCompareCard(allSubs) {
 }
 
 async function loadGroupStats() {
-  const qs = scaleFilter ? `?scale=${encodeURIComponent(scaleFilter)}` : '';
+  const params = new URLSearchParams();
+  if (scaleFilter) params.set('scale', scaleFilter);
+  else if (phaseFilter) params.set('phase', phaseFilter);
+  const qs = params.toString() ? `?${params.toString()}` : '';
   [groupStats, groupTimeline] = await Promise.all([
     api('/api/viewer/group-stats' + qs),
     api('/api/viewer/group-timeline' + qs),
@@ -628,6 +640,10 @@ function renderScaleDropdowns(byScale) {
 
 function pickScale(scale) {
   scaleFilter = scale;
+  phaseFilter = ''; // 音階を個別に選んだら、フェーズの絞り込みはリセットする
+  document.querySelectorAll('#phaseFilterBar .group-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.phase === '');
+  });
   // ドロップダウンを閉じる
   document.querySelectorAll('.scale-dropdown-menu').forEach(m => m.classList.remove('open'));
   document.querySelectorAll('.scale-dropdown-btn').forEach(b => b.classList.remove('open'));
@@ -724,7 +740,8 @@ function renderGroupStats() {
       groupFilter === 'free'  ? s.with_practice :
                                 !s.with_practice
     );
-    const maxDay = filteredTl.reduce((m, s) => Math.max(m, s.days.length), 0);
+    // 1セット分（SET_LENGTH_DAYS日）は、データがまだ無い日も含めて最初から表示する
+    const maxDay = Math.max(SET_LENGTH_DAYS, filteredTl.reduce((m, s) => Math.max(m, s.days.length), 0));
     const dayLabelsGT = Array.from({length: maxDay}, (_, i) => `Day${i+1}`);
     const datasetsGT = [];
     filteredTl.forEach((s, si) => {
@@ -801,15 +818,28 @@ function renderGroupStats() {
 }
 
 // ─── 個人詳細 ────────────────────────────────────────────────────────
+let individualPhaseFilter = ''; // '' | '1' | '2' - 個人詳細タブのフェーズ切り替え
+
+function setIndividualPhaseFilter(phase) {
+  individualPhaseFilter = phase;
+  if (selectedSubject) loadIndividual(selectedSubject.id);
+}
+
 async function loadIndividual(pid) {
   const container = document.getElementById('individualContent');
   container.innerHTML = '<p class="loading">読み込み中…</p>';
-  const timeline = await api(`/api/viewer/subject/${pid}/timeline`);
-  if (!timeline) { container.innerHTML = '<p class="empty">データなし</p>'; return; }
+  const rawTimeline = await api(`/api/viewer/subject/${pid}/timeline`);
+  if (!rawTimeline) { container.innerHTML = '<p class="empty">データなし</p>'; return; }
 
   const s = selectedSubject;
   const p1 = (s.phase1_scales || []).join(' / ');
   const p2 = (s.phase2_scales || []).join(' / ');
+
+  // フェーズ1/フェーズ2の音階ペアで絞り込む（未選択なら全フェーズ）
+  const phaseScales = individualPhaseFilter === '1' ? (s.phase1_scales || [])
+                     : individualPhaseFilter === '2' ? (s.phase2_scales || [])
+                     : null;
+  const timeline = phaseScales ? rawTimeline.filter(r => phaseScales.includes(r.scale)) : rawTimeline;
 
   container.innerHTML = `
     <div class="subject-info">
@@ -817,6 +847,16 @@ async function loadIndividual(pid) {
       <div class="info-chip"><span>フェーズ1 音階</span>${p1 || '—'}</div>
       <div class="info-chip"><span>フェーズ2 音階</span>${p2 || '—'}</div>
       <div class="info-chip"><span>総記録数</span>${timeline.length}件</div>
+    </div>
+    <div class="card" style="padding:12px 18px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:.78rem;color:var(--muted);white-space:nowrap">フェーズ：</span>
+        <div class="group-filter-bar">
+          <button class="group-filter-btn ${individualPhaseFilter === '' ? 'active' : ''}"  onclick="setIndividualPhaseFilter('')">全フェーズ</button>
+          <button class="group-filter-btn ${individualPhaseFilter === '1' ? 'active' : ''}" onclick="setIndividualPhaseFilter('1')">フェーズ1</button>
+          <button class="group-filter-btn ${individualPhaseFilter === '2' ? 'active' : ''}" onclick="setIndividualPhaseFilter('2')">フェーズ2</button>
+        </div>
+      </div>
     </div>
     <div class="card">
       <div class="card-header-row">
@@ -849,13 +889,17 @@ async function loadIndividual(pid) {
   });
 
   const allDates = [...new Set(timeline.filter(r=>r.phase==='baseline'||r.phase==='test').map(r=>r.practiced_at.substring(0,10)))].sort();
-  const dayLabels = allDates.map((d, i) => `Day${i + 1}`);
+  // 1セット分（SET_LENGTH_DAYS日）は、データがまだ無い日も含めて最初から表示する
+  const dayCount = Math.max(SET_LENGTH_DAYS, allDates.length);
+  const dayLabels = Array.from({length: dayCount}, (_, i) => `Day${i + 1}`);
   const datasets = [];
   let ci = 0;
   for (const [key, val] of Object.entries(scalePhaseMap)) {
     const isTest = val.phase === 'test';
     const baseColor = colorFor(Math.floor(ci / 2));
-    const data = allDates.map(d => {
+    const data = Array.from({length: dayCount}, (_, i) => {
+      const d = allDates[i];
+      if (d == null) return null;
       const pts = val.points.filter(p => p.x === d);
       return pts.length ? Math.round(pts.reduce((a,p)=>a+p.y,0)/pts.length*10)/10 : null;
     });
@@ -878,18 +922,19 @@ async function loadIndividual(pid) {
   const ctxIF = document.getElementById('chartIndivFlow')?.getContext('2d');
   if (ctxIF) {
     const flowLabels = [];
-    allDates.forEach((_, di) => { flowLabels.push(`Day${di+1}事前`); flowLabels.push(`Day${di+1}事後`); });
+    for (let d = 1; d <= dayCount; d++) { flowLabels.push(`day${d}B`); flowLabels.push(`day${d}A`); }
     const scalesUsed = [...new Set(timeline.filter(r => r.phase==='baseline'||r.phase==='test').map(r => r.scale))];
     const flowDatasets = scalesUsed.map((scale, fci) => {
       const c = colorFor(fci);
       const data = [];
-      allDates.forEach(d => {
-        const bRecs = timeline.filter(r => r.scale===scale && r.phase==='baseline' && r.practiced_at.startsWith(d));
-        const tRecs = timeline.filter(r => r.scale===scale && r.phase==='test'     && r.practiced_at.startsWith(d));
+      for (let i = 0; i < dayCount; i++) {
+        const d = allDates[i];
+        const bRecs = d ? timeline.filter(r => r.scale===scale && r.phase==='baseline' && r.practiced_at.startsWith(d)) : [];
+        const tRecs = d ? timeline.filter(r => r.scale===scale && r.phase==='test'     && r.practiced_at.startsWith(d)) : [];
         const bVal = bRecs.length ? Math.round(bRecs.reduce((a,r)=>a+r.accuracy,0)/bRecs.length*10)/10 : null;
         const tVal = tRecs.length ? Math.round(tRecs.reduce((a,r)=>a+r.accuracy,0)/tRecs.length*10)/10 : null;
         data.push(bVal); data.push(tVal);
-      });
+      }
       return {
         label: scale, data,
         borderColor: c, backgroundColor: c.replace(/[\d.]+\)$/, '0.15)'),
@@ -910,7 +955,7 @@ async function loadIndividual(pid) {
         title: items => {
           const idx = items[0].dataIndex;
           const day = Math.floor(idx / 2) + 1;
-          return `Day${day} ${idx % 2 === 0 ? '事前' : '事後'}`;
+          return `day${day}${idx % 2 === 0 ? 'B' : 'A'}`;
         }
       }
     };
@@ -1033,75 +1078,6 @@ function buildSessionTable(timeline) {
     <tbody>${rows}</tbody>
   </table>`;
 }
-
-// ─── 音符分析 ────────────────────────────────────────────────────────
-let noteTabLoaded = false;
-async function loadNoteTab() {
-  // グループ音符ヒートマップ（初回のみ）
-  if (!noteTabLoaded) {
-    noteTabLoaded = true;
-    const data = await api('/api/viewer/note-heatmap');
-    if (data && data.length) {
-      destroyChart('groupNotes');
-      const ctx = document.getElementById('chartGroupNotes').getContext('2d');
-      const cfgN = {
-        plugins: { legend: { display: false } },
-        indexAxis: 'y',
-        scales: {
-          x: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' }, min: 0, max: 100,
-               title: { display: true, text: '正解率 (%)', color: '#8892a4' } },
-          y: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } }
-        }
-      };
-      charts['groupNotes'] = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: data.map(r => r.note),
-          datasets: [{ data: data.map(r => r.accuracy),
-            backgroundColor: data.map(r => r.accuracy < 60 ? 'rgba(248,113,113,0.7)' : r.accuracy < 80 ? 'rgba(251,191,36,0.7)' : 'rgba(52,211,153,0.7)'),
-            borderWidth: 0 }]
-        },
-        options: { ...cfgN, responsive: true }
-      });
-    }
-  }
-
-  // 個人音符グラフ
-  if (selectedSubject) {
-    const card = document.getElementById('indivNotesCard');
-    card.style.display = '';
-    document.getElementById('indivNotesTitle').textContent = `${selectedSubject.name} の苦手音符`;
-    const data = await api(`/api/stats/notes?profile_id=${selectedSubject.id}`);
-    if (data && data.by_note && data.by_note.length) {
-      destroyChart('indivNotes');
-      const ctx2 = document.getElementById('chartIndivNotes').getContext('2d');
-      const notes = data.by_note.slice(0, 15);
-      const cfgN2 = {
-        plugins: { legend: { display: false } },
-        indexAxis: 'y',
-        scales: {
-          x: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' }, min: 0, max: 100 },
-          y: { ticks: { color: '#8892a4' }, grid: { color: '#2a3a5c' } }
-        }
-      };
-      charts['indivNotes'] = new Chart(ctx2, {
-        type: 'bar',
-        data: {
-          labels: notes.map(n => n.note),
-          datasets: [{ data: notes.map(n => n.accuracy),
-            backgroundColor: notes.map(n => n.accuracy < 60 ? 'rgba(248,113,113,0.7)' : n.accuracy < 80 ? 'rgba(251,191,36,0.7)' : 'rgba(52,211,153,0.7)'),
-            borderWidth: 0 }]
-        },
-        options: { ...cfgN2, responsive: true }
-      });
-    } else {
-      document.getElementById('chartIndivNotes').closest('.card').querySelector('canvas').insertAdjacentHTML('afterend','<p class="empty">データなし</p>');
-    }
-  }
-}
-
-// ─── /api/stats/notes レスポンス形式を確認して対応 ────────────────────
-// 既存APIは { by_note: [...] } 形式で返す
 
 // ─── 初期化 ──────────────────────────────────────────────────────────
 (async () => {

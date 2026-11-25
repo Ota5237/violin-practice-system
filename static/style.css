@@ -1338,6 +1338,16 @@ canvas { max-height: 260px; }
   margin-top: 8px;
 }
 
+/* 正答率グラフの点をクリックしたとき、同じ日に複数の記録があった場合に
+   編集テーブル側の該当行を一時的に光らせて、どれを選べばいいか分かるようにする */
+.research-row-highlight {
+  animation: research-row-flash 2s ease-out;
+}
+@keyframes research-row-flash {
+  0%, 40%  { background: rgba(212, 162, 78, 0.35); }
+  100%     { background: transparent; }
+}
+
 .research-auto-hint {
   display: block;
   font-size: 0.75rem;

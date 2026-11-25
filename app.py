@@ -1514,16 +1514,37 @@ def viewer_subject_timeline(pid):
     return jsonify([dict(r) for r in rows])
 
 
+def get_phase_scale_names(phase_num):
+    # 研究の「フェーズ1／フェーズ2」（音階ペアの切り替え）に割り当てられた音階名を返す。
+    # subject_assignment_stepsのstep_order 0,1=フェーズ1、8,9=フェーズ2は全被験者で共通の前提。
+    # 削除済みプロフィールの孤立レコード（profilesに存在しないprofile_id）が混じっていることがあるため、
+    # is_subject='yes'の現存する被験者だけに絞って集計する
+    steps = (0, 1) if phase_num == 1 else (8, 9)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(f'''
+            SELECT DISTINCT s.name
+            FROM subject_assignment_steps a
+            JOIN scales s ON s.id = a.scale_id
+            JOIN profiles p ON p.id = a.profile_id
+            WHERE a.step_order IN ({','.join('?' * len(steps))}) AND p.is_subject = 'yes'
+        ''', steps).fetchall()
+    return [r['name'] for r in rows]
+
+
 @app.route('/api/viewer/group-stats', methods=['GET'])
 @login_required
 def viewer_group_stats():
     if session.get('role') not in VIEWER_ROLES:
         return jsonify({'error': '権限がありません'}), 403
     scale = request.args.get('scale', '')
+    phase = request.args.get('phase', '')
+    phase_scale_names  = get_phase_scale_names(int(phase)) if phase in ('1', '2') else []
+    filter_scale_names = [scale] if scale else phase_scale_names
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        scale_cond = 'AND h.scale = ?' if scale else ''
-        params = [scale] if scale else []
+        scale_cond = f"AND h.scale IN ({','.join('?' * len(filter_scale_names))})" if filter_scale_names else ''
+        params = list(filter_scale_names)
         # 被験者ごとのbaseline/test平均 + アプリ練習有無
         subject_rows = conn.execute(f'''
             SELECT p.id, p.name,
@@ -1537,18 +1558,19 @@ def viewer_group_stats():
             GROUP BY p.id
             ORDER BY p.id
         ''', params).fetchall()
-        # 音階別baseline/test平均（常に全音階）
-        scale_rows = conn.execute('''
+        # 音階別baseline/test平均（フェーズ指定時はそのフェーズの音階だけ、未指定なら常に全音階）
+        by_scale_cond = f"AND h.scale IN ({','.join('?' * len(phase_scale_names))})" if phase_scale_names else ''
+        scale_rows = conn.execute(f'''
             SELECT h.scale,
                    AVG(CASE WHEN h.phase='baseline' THEN h.accuracy END) as baseline_avg,
                    AVG(CASE WHEN h.phase='test'     THEN h.accuracy END) as test_avg,
                    COUNT(*) as count
             FROM history h
             JOIN profiles p ON p.id = h.profile_id
-            WHERE p.is_subject='yes' AND h.mode='tempo' AND h.phase IN ('baseline','test')
+            WHERE p.is_subject='yes' AND h.mode='tempo' AND h.phase IN ('baseline','test') {by_scale_cond}
             GROUP BY h.scale
             ORDER BY h.scale
-        ''').fetchall()
+        ''', phase_scale_names).fetchall()
 
     subjects = []
     improvements = []
@@ -1575,6 +1597,8 @@ def viewer_group_timeline():
     if session.get('role') not in VIEWER_ROLES:
         return jsonify({'error': '権限がありません'}), 403
     scale = request.args.get('scale', '')
+    phase = request.args.get('phase', '')
+    filter_scale_names = [scale] if scale else (get_phase_scale_names(int(phase)) if phase in ('1', '2') else [])
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         profiles = conn.execute(
@@ -1582,8 +1606,8 @@ def viewer_group_timeline():
         ).fetchall()
         result = []
         for p in profiles:
-            scale_cond = 'AND scale = ?' if scale else ''
-            params = (p['id'], scale) if scale else (p['id'],)
+            scale_cond = f"AND scale IN ({','.join('?' * len(filter_scale_names))})" if filter_scale_names else ''
+            params = [p['id']] + filter_scale_names
             rows = conn.execute(f'''
                 SELECT phase, practiced_at, AVG(accuracy) as accuracy
                 FROM history

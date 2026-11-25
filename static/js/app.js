@@ -2200,6 +2200,7 @@ async function renderStatsForCurrentProfile() {
   charts.strings?.destroy();
 
   // 正答率の推移
+  // 管理者・研究者は、点をクリックするとその日の記録をその場で編集できる（中身は後からいつでも編集可能）
   const accCtx = document.getElementById('chartAccuracy').getContext('2d');
   charts.accuracy = new Chart(accCtx, {
     type: 'line',
@@ -2210,10 +2211,18 @@ async function renderStatsForCurrentProfile() {
         data: daily.map(d => d.avg_accuracy),
         borderColor: '#e8c468',
         backgroundColor: 'rgba(232,196,104,0.15)',
-        tension: 0.3, fill: true
+        tension: 0.3, fill: true,
+        pointRadius: 4, pointHitRadius: 10
       }]
     },
-    options: chartOptions('正答率 (%)', 0, 100)
+    options: {
+      ...chartOptions('正答率 (%)', 0, 100),
+      onClick: handleAccuracyChartClick,
+      onHover: (event, elements) => {
+        const canEdit = currentUser && (currentUser.role === 'admin' || currentUser.role === 'researcher');
+        event.native.target.style.cursor = (canEdit && elements.length > 0) ? 'pointer' : 'default';
+      }
+    }
   });
 
   // 日別練習回数
@@ -5638,9 +5647,43 @@ document.getElementById('statsResearchAddBtn').addEventListener('click', () => {
   openResearchAddModal(currentProfileId || null);
 });
 
+// 「📈 正答率の推移」グラフの点をクリックしたときの処理（管理者・研究者専用）。
+// グラフの各点は「その日のテンポモードの平均正答率」なので、対象もテンポモードの記録に絞って探す。
+// 該当する記録が1件だけならそのまま編集モーダルを開き、複数あれば下の編集テーブルの該当行を光らせて選べるようにする
+function handleAccuracyChartClick(event, elements) {
+  const canEdit = currentUser && (currentUser.role === 'admin' || currentUser.role === 'researcher');
+  if (!canEdit || elements.length === 0) return;
+
+  const date = charts.accuracy.data.labels[elements[0].index];
+  if (!date) return;
+
+  const matches = statsResearchRecords.filter(r => r.mode === 'tempo' && (r.practiced_at || '').startsWith(date));
+  if (matches.length === 0) return;
+
+  if (matches.length === 1) {
+    researchRecords = statsResearchRecords; // 既存の編集モーダルを再利用するための一時コピー
+    openResearchEditModal(matches[0].id);
+    return;
+  }
+  highlightStatsResearchRows(matches.map(r => r.id));
+}
+
+// 編集テーブル内の該当行までスクロールし、一時的に光らせる（同じ日に複数の記録があるとき用）
+function highlightStatsResearchRows(ids) {
+  document.getElementById('statsRecordEditCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  ids.forEach(id => {
+    const row = document.querySelector(`#statsResearchTableBody tr[data-id="${id}"]`);
+    if (!row) return;
+    row.classList.remove('research-row-highlight');
+    void row.offsetWidth; // アニメーションを再度効かせるための強制リフロー
+    row.classList.add('research-row-highlight');
+  });
+}
+
 // ===========================
 // 研究分析グラフ（管理者・研究者用）
 // ===========================
+const SET_LENGTH_DAYS = 7; // 1セット（研究の1クール）の長さ（日数）。運用ルールが変わったらここを変更する
 let researchAnalysisData  = [];
 let chartDayProgress      = null;
 let chartImprovement      = null;
@@ -5685,12 +5728,17 @@ function renderResearchAnalysisCharts() {
     if (!bucket[r.day]) { bucket[r.day] = []; }
     bucket[r.day].push(r.accuracy);
   });
+
+  // 1セット分（SET_LENGTH_DAYS日）は、データがまだ無い日も含めて最初から表示する。
+  // 実データがそれより多い日数ぶんある場合は、削らずそのまま表示する
+  const dayCount = Math.max(SET_LENGTH_DAYS, ...data.map(r => r.day), 0);
+  const days = Array.from({ length: dayCount }, (_, i) => i + 1);
+
   // 平均を出す
   const scaleSummary = {};  // scale → { baseline: [day1,day2,...], test: [...] }
   Object.keys(scaleMap).forEach(scale => {
     const b = scaleMap[scale].baseline;
     const t = scaleMap[scale].test;
-    const days = [...new Set([...Object.keys(b), ...Object.keys(t)].map(Number))].sort((a,v) => a-v);
     scaleSummary[scale] = {
       days,
       baseline: days.map(d => b[d] ? b[d].reduce((s,v) => s+v,0)/b[d].length : null),
@@ -5702,23 +5750,25 @@ function renderResearchAnalysisCharts() {
   const palette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4'];
 
   // --- グラフ1: 日別 事前/事後 推移（全音階） ---
+  // X軸は「day{N}B（Before=事前）」「day{N}A（After=事後）」を日ごとに並べた1本の軸にする
+  // （「◯◯ 事前」「◯◯ 事後」と音階ごとに2本線を引くより、凡例が短くなり見やすいため）
   const ctx1 = document.getElementById('chartResearchDayProgress').getContext('2d');
   if (chartDayProgress) chartDayProgress.destroy();
-  const ds1 = [];
-  scales.forEach((scale, si) => {
+  const dayProgressLabels = days.flatMap(d => [`day${d}B`, `day${d}A`]);
+  const ds1 = scales.map((scale, si) => {
     const col = palette[si % palette.length];
-    const { days, baseline, test } = scaleSummary[scale];
-    ds1.push({ label: `${scale} 事前`, data: baseline.map((v,i) => ({x: days[i], y: v})), borderColor: col, backgroundColor: col+'33', borderDash: [5,3], tension: 0.3 });
-    ds1.push({ label: `${scale} 事後`, data: test.map((v,i)     => ({x: days[i], y: v})), borderColor: col, backgroundColor: col+'88', tension: 0.3 });
+    const { baseline, test } = scaleSummary[scale];
+    const values = days.flatMap((_, i) => [baseline[i], test[i]]);
+    return { label: scale, data: values, borderColor: col, backgroundColor: col+'33', tension: 0, spanGaps: true };
   });
-  chartDayProgress = new Chart(ctx1, { type: 'line', data: { datasets: ds1 },
-    options: { scales: { x: { type: 'linear', title: { display: true, text: '日目' } }, y: { min: 0, max: 100, title: { display: true, text: '正答率 (%)' } } },
+  chartDayProgress = new Chart(ctx1, { type: 'line', data: { labels: dayProgressLabels, datasets: ds1 },
+    options: { layout: { padding: { top: 8 } },
+               scales: { y: { min: 0, max: 100, title: { display: true, text: '正答率 (%)' } } },
                plugins: { legend: { position: 'bottom' } } } });
 
   // --- グラフ2: 1日ごとの改善量（事後 − 事前） ---
   const ctx2 = document.getElementById('chartResearchImprovement').getContext('2d');
   if (chartImprovement) chartImprovement.destroy();
-  const allDays = [...new Set(data.map(r => r.day))].sort((a,b) => a-b);
   const ds2 = scales.map((scale, si) => {
     const col = palette[si % palette.length];
     const { days, baseline, test } = scaleSummary[scale];
@@ -5729,7 +5779,7 @@ function renderResearchAnalysisCharts() {
     return { label: scale, data: improvements, backgroundColor: col+'cc', borderColor: col, borderWidth: 1 };
   });
   chartImprovement = new Chart(ctx2, { type: 'bar',
-    data: { labels: (scaleSummary[scales[0]]?.days || allDays).map(d => `${d}日目`), datasets: ds2 },
+    data: { labels: days.map(d => `${d}日目`), datasets: ds2 },
     options: { scales: { y: { title: { display: true, text: '改善量 (pp)' } } },
                plugins: { legend: { position: 'bottom' } } } });
 
@@ -5767,7 +5817,8 @@ function renderResearchAnalysisCharts() {
       { label: '事前平均', data: subjectAvgBase, backgroundColor: '#93c5fd', borderColor: '#3b82f6', borderWidth: 1 },
       { label: '事後平均', data: subjectAvgTest, backgroundColor: '#6ee7b7', borderColor: '#10b981', borderWidth: 1 },
     ]},
-    options: { scales: { y: { min: 0, max: 100, title: { display: true, text: '正答率 (%)' } } }, plugins: { legend: { position: 'bottom' } } } });
+    options: { layout: { padding: { top: 8 } },
+               scales: { y: { min: 0, max: 100, title: { display: true, text: '正答率 (%)' } } }, plugins: { legend: { position: 'bottom' } } } });
 }
 
 // 管理者が結果画面の表示形式を切り替えたら、サーバーに保存する（反映は次回の結果画面から）
